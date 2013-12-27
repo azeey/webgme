@@ -1,208 +1,144 @@
-<!DOCTYPE html>
-<html>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
   <head>
-    <meta charset="utf-8">
-    <title>WebGME node.js to C++ Bridge</title>
-    <meta name="viewport" content="width=1024, user-scalable=no">
-    <link href='//fonts.googleapis.com/css?family=Lato:regular,regularitalic,900' rel='stylesheet' type='text/css'>
-    <link rel="stylesheet" href="deck/core/deck.core.css" type="text/css">
-    <link rel="stylesheet" href="deck/extensions/codemirror/deck.codemirror.css">
-    <link rel="stylesheet" href="deck/themes/style/kkaefer.css" type="text/css">
-
-    <script src="deck/modernizr.custom.js"></script>
-  </head>
-  <body class="deck-container">
-
-    <section class="slide" id="title">
-    <h2 class="title">Addisu Taddese</h2>
-    <h1 class="title">WebGME <br/> <strong>node.js</strong> to <strong>C++ <br/></strong> Bridge</h1>
-    </section>
-
-    <section class="slide vertical-center" id="problem">
-    <div>
-    <h2>Problem</h2>
-    <ul class="right">
-      <li class="slide">WebGME is written in JavaScript (node.js)</li>
-      <li class="slide">Model interpreters have to be written in JavaScript...</li>
-      <li class="slide"><strong>Why not JavaScript?</strong></li>
-      <li class="slide">
-      <ul>
-        <li>GME users write interpreters using C++, C#, etc.</li>
-        <li>JavaScript might be too slow for some interpreters</li>
-        <li>JavaScript is asynchronous/event-based</li>
-      </ul>
-      </li>
-    </ul></div>
-    </section>
-
-    <section class="slide" id="what-we-want">
-    <h2>What we want:</h2>
-    <ul class="right">
-      <li class="slide">
-      <img src="WebGME_Basic_Architecture.png">
-      A lightweight bridge between node.js and C++</li>
-      <li class="slide">"Clean" API without code duplication</li>
-      <li class="slide">Hide the asynchronous nature of JavaScript</li>
-    </ul>
-    </section>
-
-    <section class="slide" id="introduce-node-addons">
-    <h2>Node.js Addons</h2>
-    <ul>
-      <li>C++ plugins the provide features from other C and C++ libraries.</li>
-      <li>Can be used to expose system level calls to JavaScript (e.g. file system)</li>
-    </ul>
-    <h3>Challenge</h3>
-    <ul class="right">
-      <li class="slide"> Most addons provide functionality to be used by JavaScript code. We want the other way around.  </li>
-      <li class="slide">Documentation is sparse</li>
-    </ul>
-    </section>
-    <section class="slide" id="first-solution-1">
-    <h2>First Solution</h2>
-    Example: Get the latest commit object
-    <div><small>JavaScript</small></div>
-<textarea id="code" name="code" class="code" mode="javascript">
-var done = TASYNC.call(COMMON.openDatabase);
-done = TASYNC.call(COMMON.openProject, done);
-done = TASYNC.call(getCommit, done);
-
-function getCommit(){
-    var proj = COMMON.getProject();
-    var hash = proj.getBranchHash('master', null);
-    console.log("Hash: ");
-    TASYNC.call(function(hash){
-        console.log(hash);
-    }, hash)
-    return TASYNC.call(proj.loadObject,hash);
-}</textarea>
-    </section>
-
-    <section class="slide" id="first-solution-2">
-    <h2>First Solution</h2>
-    Example: Get the latest commit object
-    <div><small>C++</small></div>
-    <div style="width:130%">
-<textarea id="code" name="code" class="code" mode="text/x-c++src">
-Handle<Value> CallMethod(Handle<Object> object, const char * method, int argc = 0, Handle<Value> argv[] = NULL){
-  HandleScope scope;
-  Local<Function> func = Local<Function>::Cast(object->Get(String::New(method)));
-  return scope.Close(func->Call(Context::GetCurrent()->Global(), argc, argv));
-}
-
-Handle<Value> GetCommit(Handle<Object> common, Handle<Object> tasync){
-  HandleScope scope;
-  Handle<Value> proj = CallMethod(common, "getProject");
-  const int argc = 2;
-  Handle<Value> argv[argc] = {String::New("master"), Null()};
-  Handle<Value> hashFuture = CallMethod(proj->ToObject(), "getBranchHash", argc, argv);
-  const int argc_2 = 2;
-  Handle<Value> argv_2[argc_2] = {FunctionTemplate::New(HashCB)->GetFunction(), hashFuture->ToObject()};
-  return CallMethod(tasync, "debugcall", argc_2, argv_2);
-}</textarea></div>
-    </section>
-
-    <section class="slide" id="key-insight-1">
-    <!--- node fibers-->
-    <h2>Key Insight 1</h2>
-    <div><strong>node-fibers: </strong> to convert asynchronous to synchronous</div>
-    <textarea id="code" name="code" class="code" mode="javascript">
-var Fiber = require('fibers');
-
-function sleep(ms) {
-    var fiber = Fiber.current;
-    setTimeout(function() {
-        fiber.run();
-    }, ms);
-    Fiber.yield();
-}
-
-Fiber(function() {
-    console.log('wait... ' + new Date);
-    sleep(1000);
-    console.log('ok... ' + new Date);
-}).run();
-console.log('back in main');</textarea>
-    <!--<div class="slide">-->
-    <div>
-      <small>Output:</small>
-    <textarea id="code" name="code" class="code" mode="shell">
-wait... Fri Jan 21 2011 22:42:04 GMT+0900 (JST)
-back in main
-ok... Fri Jan 21 2011 22:42:05 GMT+0900 (JST)</textarea></div>
-    </section>
-
-    <section class="slide" id="key-insight-2">
-    <!--- c++-11 variadic templates-->
-    <h2>Key Insight 2</h2>
-    <div><strong>C++-11 variadic templates: </strong>for passing variable number of arguments</div>
-  <textarea id="code" name="code" class="code" mode="text/x-c++src">
-template<class...A>
-Handle<Value> CallVar(A...args){
-  HandleScope scope;
-  const int argc = sizeof...(args);
-  Handle<Value> argv[argc] = {args...};
-  return scope.Close(WebGME::CallTasyncMethod(func_, argc, argv, object_));
-}
-
-template<class...A>
-Handle<Value> operator()(A...args){
-  return CallVar(args...);
-}</textarea>
-Now, we can do:
-  <textarea id="code" name="code" class="code" mode="text/x-c++src">
-Interpreter* obj = ObjectWrap::Unwrap<Interpreter>(args.This());
-FunctionMap& project = obj->project_;
-
-Handle<Value> hash = project["getBranchHash"](String::New("master"), Null());</textarea>
-    </section>
-
-    <!--
-       -<section class="slide" id="putting-it-together">
-       -<h2>Motivation</h2>
-       -</section>
-       -->
-
-    <section class="slide vertical-center" id="demo">
-    <h1>Demo</h1>
-    </section>
-
-    <section class="slide" id="references">
-    <h2>References</h2>
-    <ul>
-      <li><a href="http://nodejs.org/api/addons.html">http://nodejs.org/api/addons.html</a></li>
-      <li><a href="https://developers.google.com/v8/embed">https://developers.google.com/v8/embed</a></li>
-      <li><a href="http://izs.me/v8-docs/main.html">http://izs.me/v8-docs/main.html</a></li>
-      <li><a href="https://github.com/laverdet/node-fibers">https://github.com/laverdet/node-fibers</a></li>
-      <li><a href="http://en.cppreference.com/w/cpp/language/parameter_pack">http://en.cppreference.com/w/cpp/language/parameter_pack</a></li>
-    </ul>
-    <br><br>
-    <ul>
-      <li>Thanks to kkaefer: <a href=https://github.com/kkaefer >https://github.com/kkaefer </a> for slide design</li> 
-    </ul>
-    </section>
-
-    <script src="deck/core/jquery-1.6.4.min.js"></script>
-    <script src="deck/core/deck.core.js"></script>
-    <script src="deck/extensions/goto/deck.goto.js"></script>
-    <script src="deck/extensions/navigation/deck.navigation.js"></script>
-    <script src="deck/extensions/status/deck.status.js"></script>
-    <script src="deck/extensions/hash/deck.hash.js"></script>
-
-    <script src="deck/extensions/codemirror/codemirror.js"></script>
-    <script src="deck/extensions/codemirror/mode/javascript/javascript.js"></script>
-    <script src="deck/extensions/codemirror/mode/clike/clike.js"></script>
-    <script src="deck/extensions/codemirror/mode/python/python.js"></script>
-    <script src="deck/extensions/codemirror/deck.codemirror.js"></script>
-    <script>
-      $(function() {
-        $.extend(true, $.deck.defaults, {
-          codemirror: {
-            theme: 'kkaefer'
-          }
-          });
-          $.deck('.slide');
-          });
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Introduction &mdash; WebGME node.js to C++ bridge 0.1 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
     </script>
-    </body>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="WebGME node.js to C++ bridge 0.1 documentation" href="#" />
+    <link rel="next" title="Writing an Interpreter in C++" href="interpreter.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="interpreter.html" title="Writing an Interpreter in C++"
+             accesskey="N">next</a> |</li>
+        <li><a href="#">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="introduction">
+<h1>Introduction<a class="headerlink" href="#introduction" title="Permalink to this headline">¶</a></h1>
+<p>WebGME is written in JavaScript and its core functionality resides on the client side (i.e., the web browser). The only
+server side component of the system is the model database. At this stage of development, model interpreters for WegGME
+can only be written in JavaScript. However, in order to support current users of GME who use C++ and other language
+bindings to write model interpreters, the core functionality of WebGME needs to be made available in their respective
+languages.</p>
+<div class="align-center figure">
+<a class="reference internal image-reference" href="_images/WebGME_Basic_Architecture.png"><img alt="_images/WebGME_Basic_Architecture.png" src="_images/WebGME_Basic_Architecture.png" style="width: 960px;" /></a>
+<p class="caption">A basic architecture of WebGME</p>
+</div>
+<p>This project provides a way to bridge WebGME&#8217;s JavaScript code to C++. This is accomplished by using NodeJS to run
+WebGME&#8217;s JavaScript code and use NodeJS&#8217; C++ addon feature. The C++ addon feature allows JavaScript objects running in
+NodeJS to be accessed and manipulated from C++. This allows us to expose an API to WebGME&#8217;s JavaScript objects. Using
+the proposed bridge, users can write model interpreters in C++ and link their code to a static NodeJS library.</p>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="interpreter.html">Writing an Interpreter in C++</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="interpreter.html#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpreter.html#development-setup">Development Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpreter.html#interpreter-essentials">Interpreter Essentials</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interpreter.html#example">Example</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#the-webgme-namespace">The <tt class="docutils literal"><span class="pre">webgme</span></tt> Namespace</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#objectmap-and-functonmap">ObjectMap and FunctonMap</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div class="section" id="indices-and-tables">
+<h1>Indices and tables<a class="headerlink" href="#indices-and-tables" title="Permalink to this headline">¶</a></h1>
+<ul class="simple">
+<li><a class="reference internal" href="genindex.html"><em>Index</em></a></li>
+<li><a class="reference internal" href="search.html"><em>Search Page</em></a></li>
+</ul>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="#">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Introduction</a><ul>
+</ul>
+</li>
+<li><a class="reference internal" href="#indices-and-tables">Indices and tables</a></li>
+</ul>
+
+  <h4>Next topic</h4>
+  <p class="topless"><a href="interpreter.html"
+                        title="next chapter">Writing an Interpreter in C++</a></p>
+  <h3>This Page</h3>
+  <ul class="this-page-menu">
+    <li><a href="_sources/index.txt"
+           rel="nofollow">Show Source</a></li>
+  </ul>
+<div id="searchbox" style="display: none">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="interpreter.html" title="Writing an Interpreter in C++"
+             >next</a> |</li>
+        <li><a href="#">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+        &copy; Copyright 2013, Addisu Z. Taddese.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.
+    </div>
+  </body>
 </html>

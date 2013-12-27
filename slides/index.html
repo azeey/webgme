@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebGME node.js to C++ Bridge</title>
+    <meta name="viewport" content="width=1024, user-scalable=no">
+    <link href='//fonts.googleapis.com/css?family=Lato:regular,regularitalic,900' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" href="deck/core/deck.core.css" type="text/css">
+    <link rel="stylesheet" href="deck/extensions/codemirror/deck.codemirror.css">
+    <link rel="stylesheet" href="deck/themes/style/kkaefer.css" type="text/css">
+
+    <script src="deck/modernizr.custom.js"></script>
+  </head>
+  <body class="deck-container">
+
+    <section class="slide" id="title">
+    <h2 class="title">Addisu Taddese</h2>
+    <h1 class="title">WebGME <br/> <strong>node.js</strong> to <strong>C++ <br/></strong> Bridge</h1>
+    </section>
+
+    <section class="slide vertical-center" id="problem">
+    <div>
+    <h2>Problem</h2>
+    <ul class="right">
+      <li class="slide">WebGME is written in JavaScript (node.js)</li>
+      <li class="slide">Model interpreters have to be written in JavaScript...</li>
+      <li class="slide"><strong>Why not JavaScript?</strong></li>
+      <li class="slide">
+      <ul>
+        <li>GME users write interpreters using C++, C#, etc.</li>
+        <li>JavaScript might be too slow for some interpreters</li>
+        <li>JavaScript is asynchronous/event-based</li>
+      </ul>
+      </li>
+    </ul></div>
+    </section>
+
+    <section class="slide" id="what-we-want">
+    <h2>What we want:</h2>
+    <ul class="right">
+      <li class="slide">
+      <img src="WebGME_Basic_Architecture.png">
+      A lightweight bridge between node.js and C++</li>
+      <li class="slide">"Clean" API without code duplication</li>
+      <li class="slide">Hide the asynchronous nature of JavaScript</li>
+    </ul>
+    </section>
+
+    <section class="slide" id="introduce-node-addons">
+    <h2>Node.js Addons</h2>
+    <ul>
+      <li>C++ plugins the provide features from other C and C++ libraries.</li>
+      <li>Can be used to expose system level calls to JavaScript (e.g. file system)</li>
+    </ul>
+    <h3>Challenge</h3>
+    <ul class="right">
+      <li class="slide"> Most addons provide functionality to be used by JavaScript code. We want the other way around.  </li>
+      <li class="slide">Documentation is sparse</li>
+    </ul>
+    </section>
+    <section class="slide" id="first-solution-1">
+    <h2>First Solution</h2>
+    Example: Get the latest commit object
+    <div><small>JavaScript</small></div>
+<textarea id="code" name="code" class="code" mode="javascript">
+var done = TASYNC.call(COMMON.openDatabase);
+done = TASYNC.call(COMMON.openProject, done);
+done = TASYNC.call(getCommit, done);
+
+function getCommit(){
+    var proj = COMMON.getProject();
+    var hash = proj.getBranchHash('master', null);
+    console.log("Hash: ");
+    TASYNC.call(function(hash){
+        console.log(hash);
+    }, hash)
+    return TASYNC.call(proj.loadObject,hash);
+}</textarea>
+    </section>
+
+    <section class="slide" id="first-solution-2">
+    <h2>First Solution</h2>
+    Example: Get the latest commit object
+    <div><small>C++</small></div>
+    <div style="width:130%">
+<textarea id="code" name="code" class="code" mode="text/x-c++src">
+Handle<Value> CallMethod(Handle<Object> object, const char * method, int argc = 0, Handle<Value> argv[] = NULL){
+  HandleScope scope;
+  Local<Function> func = Local<Function>::Cast(object->Get(String::New(method)));
+  return scope.Close(func->Call(Context::GetCurrent()->Global(), argc, argv));
+}
+
+Handle<Value> GetCommit(Handle<Object> common, Handle<Object> tasync){
+  HandleScope scope;
+  Handle<Value> proj = CallMethod(common, "getProject");
+  const int argc = 2;
+  Handle<Value> argv[argc] = {String::New("master"), Null()};
+  Handle<Value> hashFuture = CallMethod(proj->ToObject(), "getBranchHash", argc, argv);
+  const int argc_2 = 2;
+  Handle<Value> argv_2[argc_2] = {FunctionTemplate::New(HashCB)->GetFunction(), hashFuture->ToObject()};
+  return CallMethod(tasync, "debugcall", argc_2, argv_2);
+}</textarea></div>
+    </section>
+
+    <section class="slide" id="key-insight-1">
+    <!--- node fibers-->
+    <h2>Key Insight 1</h2>
+    <div><strong>node-fibers: </strong> to convert asynchronous to synchronous</div>
+    <textarea id="code" name="code" class="code" mode="javascript">
+var Fiber = require('fibers');
+
+function sleep(ms) {
+    var fiber = Fiber.current;
+    setTimeout(function() {
+        fiber.run();
+    }, ms);
+    Fiber.yield();
+}
+
+Fiber(function() {
+    console.log('wait... ' + new Date);
+    sleep(1000);
+    console.log('ok... ' + new Date);
+}).run();
+console.log('back in main');</textarea>
+    <!--<div class="slide">-->
+    <div>
+      <small>Output:</small>
+    <textarea id="code" name="code" class="code" mode="shell">
+wait... Fri Jan 21 2011 22:42:04 GMT+0900 (JST)
+back in main
+ok... Fri Jan 21 2011 22:42:05 GMT+0900 (JST)</textarea></div>
+    </section>
+
+    <section class="slide" id="key-insight-2">
+    <!--- c++-11 variadic templates-->
+    <h2>Key Insight 2</h2>
+    <div><strong>C++-11 variadic templates: </strong>for passing variable number of arguments</div>
+  <textarea id="code" name="code" class="code" mode="text/x-c++src">
+template<class...A>
+Handle<Value> CallVar(A...args){
+  HandleScope scope;
+  const int argc = sizeof...(args);
+  Handle<Value> argv[argc] = {args...};
+  return scope.Close(WebGME::CallTasyncMethod(func_, argc, argv, object_));
+}
+
+template<class...A>
+Handle<Value> operator()(A...args){
+  return CallVar(args...);
+}</textarea>
+Now, we can do:
+  <textarea id="code" name="code" class="code" mode="text/x-c++src">
+Interpreter* obj = ObjectWrap::Unwrap<Interpreter>(args.This());
+FunctionMap& project = obj->project_;
+
+Handle<Value> hash = project["getBranchHash"](String::New("master"), Null());</textarea>
+    </section>
+
+    <!--
+       -<section class="slide" id="putting-it-together">
+       -<h2>Motivation</h2>
+       -</section>
+       -->
+
+    <section class="slide vertical-center" id="demo">
+    <h1>Demo</h1>
+    </section>
+
+    <section class="slide" id="references">
+    <h2>References</h2>
+    <ul>
+      <li><a href="http://nodejs.org/api/addons.html">http://nodejs.org/api/addons.html</a></li>
+      <li><a href="https://developers.google.com/v8/embed">https://developers.google.com/v8/embed</a></li>
+      <li><a href="http://izs.me/v8-docs/main.html">http://izs.me/v8-docs/main.html</a></li>
+      <li><a href="https://github.com/laverdet/node-fibers">https://github.com/laverdet/node-fibers</a></li>
+      <li><a href="http://en.cppreference.com/w/cpp/language/parameter_pack">http://en.cppreference.com/w/cpp/language/parameter_pack</a></li>
+    </ul>
+    <br><br>
+    <ul>
+      <li>Thanks to kkaefer: <a href=https://github.com/kkaefer >https://github.com/kkaefer </a> for slide design</li> 
+    </ul>
+    </section>
+
+    <script src="deck/core/jquery-1.6.4.min.js"></script>
+    <script src="deck/core/deck.core.js"></script>
+    <script src="deck/extensions/goto/deck.goto.js"></script>
+    <script src="deck/extensions/navigation/deck.navigation.js"></script>
+    <script src="deck/extensions/status/deck.status.js"></script>
+    <script src="deck/extensions/hash/deck.hash.js"></script>
+
+    <script src="deck/extensions/codemirror/codemirror.js"></script>
+    <script src="deck/extensions/codemirror/mode/javascript/javascript.js"></script>
+    <script src="deck/extensions/codemirror/mode/clike/clike.js"></script>
+    <script src="deck/extensions/codemirror/mode/python/python.js"></script>
+    <script src="deck/extensions/codemirror/deck.codemirror.js"></script>
+    <script>
+      $(function() {
+        $.extend(true, $.deck.defaults, {
+          codemirror: {
+            theme: 'kkaefer'
+          }
+          });
+          $.deck('.slide');
+          });
+    </script>
+    </body>
+</html>

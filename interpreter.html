@@ -1,0 +1,287 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Writing an Interpreter in C++ &mdash; WebGME node.js to C++ bridge 0.1 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="WebGME node.js to C++ bridge 0.1 documentation" href="index.html" />
+    <link rel="next" title="API Reference" href="api.html" />
+    <link rel="prev" title="Introduction" href="index.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="api.html" title="API Reference"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Introduction"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="writing-an-interpreter-in-c">
+<h1>Writing an Interpreter in C++<a class="headerlink" href="#writing-an-interpreter-in-c" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this headline">¶</a></h2>
+<p>Writing a WebGME interpreter in C++ requires a good knowledge of node, V8, and JavaScript. At the very least, one has to
+know about V8&#8217;s memory management system in order to use JavaScript objects in C++ via Handles. The best reference is
+the <a class="reference external" href="https://developers.google.com/v8/embed">v8 embedders guide</a>. In addition, none of the JavaScript API for WebGME is documenter here. Since the C++ API
+merely exposes the JavaScript interface in C++, using it without knowing the JavaScript API is impossible.</p>
+</div>
+<div class="section" id="development-setup">
+<h2>Development Setup<a class="headerlink" href="#development-setup" title="Permalink to this headline">¶</a></h2>
+<p>Writing a WebGME interpreter in C++ currently involves installing necessary dependencies and modifying part of the
+interpreter API The API files are part of the webgme installation and can be found in <tt class="docutils literal"><span class="pre">api/cpp</span></tt> directory.</p>
+<p>Dependencies required to build an interpreter are <tt class="docutils literal"><span class="pre">node</span></tt>, <tt class="docutils literal"><span class="pre">npm</span></tt>, <tt class="docutils literal"><span class="pre">node-gyp</span></tt>, <tt class="docutils literal"><span class="pre">g++</span></tt>, and <tt class="docutils literal"><span class="pre">make</span></tt>. These tools need to be
+installed on the system prior to building an interpreter. <tt class="docutils literal"><span class="pre">Node</span></tt> can be installed from a distro repository or from
+source. The C++ interpreter API was tested against Node v0.10.0 so earlier versions are not recommended.</p>
+<p>JavaScript module dependencies are listed in <tt class="docutils literal"><span class="pre">package.json</span></tt> and can be installed
+using:</p>
+<div class="highlight-python"><pre>$ npm install</pre>
+</div>
+<p>Building the interpreter is accomplished by invoking <tt class="docutils literal"><span class="pre">node-gyp</span></tt> with a <tt class="docutils literal"><span class="pre">rebuild</span></tt> argument:</p>
+<div class="highlight-python"><pre>$ node-gyp rebuild</pre>
+</div>
+<p>There are two modes of development for C++ interpreters:</p>
+<ul class="simple">
+<li><strong>C++ interpreter inside webgme development tree</strong>: This mode of development lends itself well for developing the C++
+interpreter while working on other parts of webgme code. This mode is more relevant to webgme developers who will have
+checked out webgme from the git repository. In this mode, development can be done in the <tt class="docutils literal"><span class="pre">api/cpp</span></tt> directory and
+changes to webgme will be immediately available to the C++ interpreter.</li>
+<li><strong>Standalone C++ interpreter</strong>: In this mode, the C++ interpreter can be written anywhere as long as the necessary
+dependencies are met. The dependencies can be installed using <tt class="docutils literal"><span class="pre">npm</span></tt> and a corresponding <tt class="docutils literal"><span class="pre">package.json</span></tt> file
+listing all dependencies. This mode of development will be probably be the norm once the C++ API is integrated into
+the mainline webgme code. At this time, however, it requires too much manual labor.</li>
+</ul>
+</div>
+<div class="section" id="interpreter-essentials">
+<h2>Interpreter Essentials<a class="headerlink" href="#interpreter-essentials" title="Permalink to this headline">¶</a></h2>
+<p>The entry point for user interpreters is <tt class="docutils literal"><span class="pre">Interpreter::InvokeEx</span></tt>, which is found in <tt class="docutils literal"><span class="pre">Interpreter.cc</span></tt>. The skeleton
+for this function is the following:</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">Interpreter</span><span class="o">::</span><span class="n">InvokeEx</span><span class="p">(</span><span class="k">const</span> <span class="n">Arguments</span><span class="o">&amp;</span> <span class="n">args</span><span class="p">){</span>
+  <span class="n">HandleScope</span> <span class="n">scope</span><span class="p">;</span>
+
+  <span class="n">Interpreter</span><span class="o">*</span> <span class="n">obj</span> <span class="o">=</span> <span class="n">ObjectWrap</span><span class="o">::</span><span class="n">Unwrap</span><span class="o">&lt;</span><span class="n">Interpreter</span><span class="o">&gt;</span><span class="p">(</span><span class="n">args</span><span class="p">.</span><span class="n">This</span><span class="p">());</span>
+  <span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">project</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">project_</span><span class="p">;</span>
+  <span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">core</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">core_</span><span class="p">;</span>
+
+  <span class="k">return</span> <span class="n">scope</span><span class="p">.</span><span class="n">Close</span><span class="p">(</span><span class="n">Undefined</span><span class="p">());</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The line, <tt class="docutils literal"><span class="pre">HandleScope</span> <span class="pre">scope</span></tt>, should always be present because it is what v8 uses for its garbage collection. Using
+this object, v8 keeps track of all non-persistent Handles created in subsequent parts of the function and will be
+garbage collect them when they go out of scope. The <tt class="docutils literal"><span class="pre">return</span></tt> statement at the end of the function can be used to
+return values other than <tt class="docutils literal"><span class="pre">Undefined()</span></tt>. At this time, this return value will not be used anywhere else in the system
+so it is fine to just leave it as is.</p>
+<p>The remaining lines of the code, shown here again for clarity, are used to expose the JavaScript objects <tt class="docutils literal"><span class="pre">project</span></tt> and
+<tt class="docutils literal"><span class="pre">core</span></tt>. These two objects are obtained from JavaScript automatically when the interpreter is initialized. In this
+code, we are merely assigning references for ease of use.</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">Interpreter</span><span class="o">*</span> <span class="n">obj</span> <span class="o">=</span> <span class="n">ObjectWrap</span><span class="o">::</span><span class="n">Unwrap</span><span class="o">&lt;</span><span class="n">Interpreter</span><span class="o">&gt;</span><span class="p">(</span><span class="n">args</span><span class="p">.</span><span class="n">This</span><span class="p">());</span>
+<span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">project</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">project_</span><span class="p">;</span>
+<span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">core</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">core_</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>As explained in the <a class="reference internal" href="api.html"><em>API Reference</em></a>, FunctionMaps and ObjectMaps are used to call and access object methods and attributes
+respectively. For example, the JavaScript object <tt class="docutils literal"><span class="pre">project</span></tt> has a method called <tt class="docutils literal"><span class="pre">getBranchHash</span></tt>. This function can be
+called from C++ (with appropriate arguments) as such:</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">project</span><span class="p">[</span><span class="s">&quot;getBranchHash&quot;</span><span class="p">](</span><span class="n">arg1</span><span class="p">,</span><span class="n">arg2</span><span class="p">);</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">JavaScript method arguments have to properly converted into objects expected by the JavaScript method. That is, PODs
+such as <tt class="docutils literal"><span class="pre">int</span></tt> cannot be directly passed as arguments. Instead, they have to be converted into v8&#8217;s representation
+of the POD. To pass an <tt class="docutils literal"><span class="pre">int</span></tt>, a new object has to be created with <tt class="docutils literal"><span class="pre">Integer::New()</span></tt>.</p>
+</div>
+<p>Alternatively, if the JavaScript method of interest is going to be used repeatedly, a reference to the function can be
+assigned in the form of a <tt class="docutils literal"><span class="pre">TasyncCallable</span></tt>:
+.. code-block:: c++</p>
+<blockquote>
+<div>TasyncCallable getBranchHash = project[&#8220;getBranchHash&#8221;];
+getBranchHash(arg1,arg2);</div></blockquote>
+</div>
+<div class="section" id="example">
+<h2>Example<a class="headerlink" href="#example" title="Permalink to this headline">¶</a></h2>
+<p>The following example recursively prints out the names of all objects in a given WebGME project.</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="kt">void</span> <span class="nf">PrintRecursive</span><span class="p">(</span><span class="k">const</span> <span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">core</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">node</span><span class="p">,</span> <span class="kt">int</span> <span class="n">indent</span><span class="p">){</span>
+
+  <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Array</span><span class="o">&gt;</span> <span class="n">children</span> <span class="o">=</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Array</span><span class="o">&gt;::</span><span class="n">Cast</span><span class="p">(</span><span class="n">core</span><span class="p">[</span><span class="s">&quot;loadChildren&quot;</span><span class="p">](</span><span class="n">node</span><span class="p">));</span>
+
+  <span class="k">if</span><span class="p">(</span><span class="n">children</span><span class="o">-&gt;</span><span class="n">Length</span><span class="p">()</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">){</span>
+    <span class="k">for</span><span class="p">(</span><span class="kt">int</span> <span class="n">j</span><span class="o">=</span><span class="mi">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">indent</span><span class="p">;</span> <span class="n">j</span><span class="o">++</span><span class="p">)</span> <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">&quot;</span><span class="se">\t</span><span class="s">&quot;</span><span class="p">;</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">&quot;Children length: &quot;</span> <span class="o">&lt;&lt;</span> <span class="n">children</span><span class="o">-&gt;</span><span class="n">Length</span><span class="p">()</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+  <span class="p">}</span>
+
+  <span class="k">for</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">i</span><span class="o">=</span><span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">children</span><span class="o">-&gt;</span><span class="n">Length</span><span class="p">();</span> <span class="n">i</span><span class="o">++</span><span class="p">){</span>
+    <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">name</span> <span class="o">=</span> <span class="n">core</span><span class="p">[</span><span class="s">&quot;getAttribute&quot;</span><span class="p">](</span><span class="n">children</span><span class="o">-&gt;</span><span class="n">Get</span><span class="p">(</span><span class="n">i</span><span class="p">),</span> <span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;name&quot;</span><span class="p">));</span>
+    <span class="k">for</span><span class="p">(</span><span class="kt">int</span> <span class="n">j</span><span class="o">=</span><span class="mi">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">indent</span><span class="p">;</span> <span class="n">j</span><span class="o">++</span><span class="p">)</span> <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">&quot;</span><span class="se">\t</span><span class="s">&quot;</span><span class="p">;</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="n">name</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+    <span class="n">PrintRecursive</span><span class="p">(</span><span class="n">core</span><span class="p">,</span><span class="n">children</span><span class="o">-&gt;</span><span class="n">Get</span><span class="p">(</span><span class="n">i</span><span class="p">),</span> <span class="n">indent</span><span class="o">+</span><span class="mi">1</span><span class="p">);</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">Interpreter</span><span class="o">::</span><span class="n">InvokeEx</span><span class="p">(</span><span class="k">const</span> <span class="n">Arguments</span><span class="o">&amp;</span> <span class="n">args</span><span class="p">){</span>
+  <span class="n">HandleScope</span> <span class="n">scope</span><span class="p">;</span>
+  <span class="n">CERR</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+
+  <span class="n">Interpreter</span><span class="o">*</span> <span class="n">obj</span> <span class="o">=</span> <span class="n">ObjectWrap</span><span class="o">::</span><span class="n">Unwrap</span><span class="o">&lt;</span><span class="n">Interpreter</span><span class="o">&gt;</span><span class="p">(</span><span class="n">args</span><span class="p">.</span><span class="n">This</span><span class="p">());</span>
+  <span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">project</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">project_</span><span class="p">;</span>
+  <span class="n">FunctionMap</span><span class="o">&amp;</span> <span class="n">core</span> <span class="o">=</span> <span class="n">obj</span><span class="o">-&gt;</span><span class="n">core_</span><span class="p">;</span>
+
+  <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">hash</span> <span class="o">=</span> <span class="n">project</span><span class="p">[</span><span class="s">&quot;getBranchHash&quot;</span><span class="p">](</span><span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;master&quot;</span><span class="p">),</span> <span class="n">Null</span><span class="p">());</span>
+
+  <span class="n">CERR</span> <span class="o">&lt;&lt;</span> <span class="s">&quot;Hash: &quot;</span> <span class="o">&lt;&lt;</span> <span class="n">hash</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+
+  <span class="n">ObjectMap</span> <span class="nf">commit</span><span class="p">(</span><span class="n">project</span><span class="p">[</span><span class="s">&quot;loadObject&quot;</span><span class="p">](</span><span class="n">hash</span><span class="p">));</span>
+  <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">root</span> <span class="o">=</span> <span class="n">core</span><span class="p">[</span><span class="s">&quot;loadRoot&quot;</span><span class="p">](</span><span class="n">commit</span><span class="p">[</span><span class="s">&quot;root&quot;</span><span class="p">]);</span>
+  <span class="n">PrintRecursive</span><span class="p">(</span><span class="n">core</span><span class="p">,</span> <span class="n">root</span><span class="p">,</span><span class="mi">0</span><span class="p">);</span>
+
+
+  <span class="k">return</span> <span class="n">scope</span><span class="p">.</span><span class="n">Close</span><span class="p">(</span><span class="n">Undefined</span><span class="p">());</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Since the interpreter uses the <tt class="docutils literal"><span class="pre">Common</span></tt> library, it inherits all the configuration and command line argument
+capabilities of the library. Thus, arguments specifying database connection as well as project selection (&#8211;proj) can be passed
+on the command line. The <tt class="docutils literal"><span class="pre">bin/config.js</span></tt> file can also be used to configure these settings.</p>
+<p>To run the example using a direct mongodb connection:</p>
+<div class="highlight-python"><pre>$ node-gyp rebuild
+$ node init.js</pre>
+</div>
+<div class="admonition tip">
+<p class="first admonition-title">Tip</p>
+<p class="last">If the <tt class="docutils literal"><span class="pre">package.json</span></tt> file is setup to refer to <tt class="docutils literal"><span class="pre">init.js</span></tt>, the last line of the code above can be <tt class="docutils literal"><span class="pre">$</span> <span class="pre">node</span> <span class="pre">./</span></tt></p>
+</div>
+<p>To run it with a socketio connection:</p>
+<div class="highlight-python"><pre>$ node-gyp rebuild
+$ node init.js --socketio host port</pre>
+</div>
+<p>Where the host and port arguments specify where the WebGME server is running.</p>
+<p>Sample output:</p>
+<div class="highlight-python"><pre>$ node ./
+Opening mongo database multi on 127.0.0.1:27017
+Opening project test
+../Interpreter.cc:33:InvokeEx():
+../Interpreter.cc:43:InvokeEx(): Hash: #eb6c4a9e2f6de71a20f7270a8cc3a050794fca8a
+Children length: 12
+Test
+        Children length: 5
+        MODEL_2
+        MODEL_3
+        MODEL_4
+        MODEL_0
+        MODEL_1
+MODEL_3-&gt;MODEL_5
+MODEL_1-&gt;MODEL_0
+MODEL_2
+MODEL_3
+MODEL_4
+MODEL_5
+MODEL_6
+MODEL_1
+MODEL_4-&gt;MODEL_5
+MODEL_3-&gt;MODEL_6
+MODEL_4-&gt;MODEL_2
+Closing project
+Closing database</pre>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Writing an Interpreter in C++</a><ul>
+<li><a class="reference internal" href="#requirements">Requirements</a></li>
+<li><a class="reference internal" href="#development-setup">Development Setup</a></li>
+<li><a class="reference internal" href="#interpreter-essentials">Interpreter Essentials</a></li>
+<li><a class="reference internal" href="#example">Example</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="index.html"
+                        title="previous chapter">Introduction</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="api.html"
+                        title="next chapter">API Reference</a></p>
+  <h3>This Page</h3>
+  <ul class="this-page-menu">
+    <li><a href="_sources/interpreter.txt"
+           rel="nofollow">Show Source</a></li>
+  </ul>
+<div id="searchbox" style="display: none">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="api.html" title="API Reference"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Introduction"
+             >previous</a> |</li>
+        <li><a href="index.html">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+        &copy; Copyright 2013, Addisu Z. Taddese.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.
+    </div>
+  </body>
+</html>

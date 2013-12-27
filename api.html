@@ -1,0 +1,441 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>API Reference &mdash; WebGME node.js to C++ bridge 0.1 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="WebGME node.js to C++ bridge 0.1 documentation" href="index.html" />
+    <link rel="prev" title="Writing an Interpreter in C++" href="interpreter.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="interpreter.html" title="Writing an Interpreter in C++"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="api-reference">
+<h1>API Reference<a class="headerlink" href="#api-reference" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="the-webgme-namespace">
+<h2>The <tt class="docutils literal"><span class="pre">webgme</span></tt> Namespace<a class="headerlink" href="#the-webgme-namespace" title="Permalink to this headline">¶</a></h2>
+<p>The <tt class="docutils literal"><span class="pre">webgme</span></tt> namespace contains internal utility functions that are used to access object attributes and call JavaScript
+functions. All function calls are made via the TASYNC library using the call_sync method. This method is implemented
+using <strong>node-fibers</strong> and gives us the ability to &#8220;block&#8221; on function calls without blocking the entire V8 thread. The
+utility functions available in this namespace are not to be used directly; rather, higher level abstractions have been
+created that ease the invocation of JavaScript methods and access of object attributes. The namespace contains two
+global variables, common and tasync. These variables are initialized once at the beginning of the interpreter
+invocation.</p>
+<dl class="member">
+<dt id="common__Persistent:Object:">
+<em class="property">static</em> Persistent&lt;Object&gt; <tt class="descname">common</tt><a class="headerlink" href="#common__Persistent:Object:" title="Permalink to this definition">¶</a></dt>
+<dd><p>A presistent object that is assigned to the JavaScript library COMMON. The COMMON library is used to make database
+and project related calls. Apart from being a convenience, the library also wraps its calls with TASYNC.wrap so that
+calls return a future instead of expecting a callback function. This mechanism is important in our implementation of
+synchronous calls because all calls are expected to return real or future values and not have callbacks.</p>
+</dd></dl>
+
+<dl class="member">
+<dt id="tasync__Persistent:Object:">
+<em class="property">static</em> Persistent&lt;Object&gt; <tt class="descname">tasync</tt><a class="headerlink" href="#tasync__Persistent:Object:" title="Permalink to this definition">¶</a></dt>
+<dd><p>A presistent object that is assigned to the JavaScript library TASYNC. This library is used to make all function
+calls into JavaScript and is the building block of the synchronous call mechanism.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::Initialize__Handle:Value:.Handle:Value:">
+void <tt class="descclassname">webgme::</tt><tt class="descname">Initialize</tt><big>(</big>Handle&lt;Value&gt; <em>com</em>, Handle&lt;Value&gt; <em>tas</em><big>)</big><a class="headerlink" href="#webgme::Initialize__Handle:Value:.Handle:Value:" title="Permalink to this definition">¶</a></dt>
+<dd><p>Initialize the Initialize global variables common and tasync if they haven&#8217;t already been initialized.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>Handle&lt;Value&gt; com</strong> &#8211; COMMON object</li>
+<li><strong>Handle&lt;Value&gt; tas</strong> &#8211; TASYNC object</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::GetObjectAttr__Handle:Value:.cCP">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::</tt><tt class="descname">GetObjectAttr</tt><big>(</big>Handle&lt;Value&gt; <em>object</em>, const char* <em>attr</em><big>)</big><a class="headerlink" href="#webgme::GetObjectAttr__Handle:Value:.cCP" title="Permalink to this definition">¶</a></dt>
+<dd><p>Convenience function to return an object&#8217;s attribute. It is an JavaScript equivalent of:</p>
+<div class="highlight-javascript"><div class="highlight"><pre><span class="k">return</span> <span class="nx">object</span><span class="p">.</span><span class="nx">attr</span><span class="p">;</span>
+</pre></div>
+</div>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>Handle&lt;Value&gt; object</strong> &#8211; Any JavaScript object (i.e. it can&#8217;t be a JavaScript primitive like int)</li>
+<li><strong>const char* attr</strong> &#8211; A string representing the attribute name</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">The object attribute</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="GetObjectMethod__Handle:Value:.cCP">
+Handle&lt;Function&gt; <tt class="descname">GetObjectMethod</tt><big>(</big>Handle&lt;Value&gt; <em>object</em>, const char* <em>attr</em><big>)</big><a class="headerlink" href="#GetObjectMethod__Handle:Value:.cCP" title="Permalink to this definition">¶</a></dt>
+<dd><p>Convenience function to return an object&#8217;s attribute cast as a <tt class="docutils literal"><span class="pre">Function</span></tt>. It is a JavaScript equivalent of:</p>
+<div class="highlight-javascript"><div class="highlight"><pre><span class="k">return</span> <span class="nx">object</span><span class="p">.</span><span class="nx">attr</span><span class="p">;</span>
+</pre></div>
+</div>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>Handle&lt;Value&gt; object</strong> &#8211; Any JavaScript object</li>
+<li><strong>const char* attr</strong> &#8211; A string representing the attribute name</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">The JavaScript function object</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::CallTasyncMethod__Handle:Function:.unsigned-iC.Handle:Value:A.Handle:Value:">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::</tt><tt class="descname">CallTasyncMethod</tt><big>(</big>Handle&lt;Function&gt; <em>method</em>, const unsigned int <em>argc</em><em>=0</em>, Handle&lt;Value&gt; <em>argv</em>[]<em>=NULL</em>, Handle&lt;Value&gt; <em>object</em><em>=Null()</em><big>)</big><a class="headerlink" href="#webgme::CallTasyncMethod__Handle:Function:.unsigned-iC.Handle:Value:A.Handle:Value:" title="Permalink to this definition">¶</a></dt>
+<dd><p>Uses the global TASYNC object to make calls into JavaScript. The <tt class="docutils literal"><span class="pre">method</span></tt> argument must be a JavaScript callable.
+This is a JavaScript equivalent of:</p>
+<div class="highlight-javascript"><div class="highlight"><pre><span class="k">return</span> <span class="nx">TASYNC</span><span class="p">.</span><span class="nx">call_sync</span><span class="p">(</span><span class="nx">method</span><span class="p">,</span> <span class="nx">arg0</span><span class="p">,</span> <span class="nx">arg1</span><span class="p">,</span> <span class="nx">arg2</span><span class="p">,...,</span><span class="nx">argn</span><span class="p">,</span> <span class="nx">object</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>This is the most important function in this namespace as it establishes a common calling mechanism for all calls
+into JavaScript while at the same time providing the synchronous call mechanism we desire. Since it calls a function
+which then calls another function, the implementation of this function entails creating a new array and populating
+the arguments in the proper order. Namely, the first argument of the new array is the <tt class="docutils literal"><span class="pre">method</span></tt>. This is followed
+by the arguments for the <tt class="docutils literal"><span class="pre">method</span></tt>. Finally, the <tt class="docutils literal"><span class="pre">object</span></tt> is included in case the <tt class="docutils literal"><span class="pre">method</span></tt> needs to be bound
+this <tt class="docutils literal"><span class="pre">object</span></tt>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>Handle&lt;Value&gt; method</strong> &#8211; The method to be called using TASYNC</li>
+<li><strong>const unsigned int argc = 0</strong> &#8211; Number of arguments</li>
+<li><strong>Handle&lt;Value&gt; argv[] = NULL</strong> &#8211; Array of arguments</li>
+<li><strong>Handle&lt;Value&gt; object = Null()</strong> &#8211; Object to which method is bound</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">return value of the JavaScript function call</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="CallCommonMethod__cCP.unsigned-iC.Handle:Value:A">
+Handle&lt;Value&gt; <tt class="descname">CallCommonMethod</tt><big>(</big>const char* <em>method</em>, const unsigned int <em>argc</em><em>=0</em>, Handle&lt;Value&gt; <em>argv</em>[]<em>=NULL</em><big>)</big><a class="headerlink" href="#CallCommonMethod__cCP.unsigned-iC.Handle:Value:A" title="Permalink to this definition">¶</a></dt>
+<dd><p>Call a member method of the COMMON library.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>const char * method</strong> &#8211; Name of the method</li>
+<li><strong>const unsigned int argc = 0</strong> &#8211; Number of arguments</li>
+<li><strong>Handle&lt;Value&gt; argv[] = NULL</strong> &#8211; Array of arguments</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">return value of the JavaScript function call</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="CallObjectMethod__Handle:Value:.cCP.unsigned-iC.Handle:Value:A">
+Handle&lt;Value&gt; <tt class="descname">CallObjectMethod</tt><big>(</big>Handle&lt;Value&gt; <em>object</em>, const char* <em>method</em>, const unsigned int <em>argc</em><em>=0</em>, Handle&lt;Value&gt; <em>argv</em>[]<em>=NULL</em><big>)</big><a class="headerlink" href="#CallObjectMethod__Handle:Value:.cCP.unsigned-iC.Handle:Value:A" title="Permalink to this definition">¶</a></dt>
+<dd><p>Call a member method of any JavaScript object.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>Handle&lt;Value&gt; object</strong> &#8211; Object that contains the method to be called</li>
+<li><strong>const char * method</strong> &#8211; Name of the method</li>
+<li><strong>const unsigned int argc = 0</strong> &#8211; Number of arguments</li>
+<li><strong>Handle&lt;Value&gt; argv[] = NULL</strong> &#8211; Array of arguments</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">return value of the JavaScript function call</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</div>
+<div class="section" id="objectmap-and-functonmap">
+<h2>ObjectMap and FunctonMap<a class="headerlink" href="#objectmap-and-functonmap" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="webgme::ObjectMap">
+<em class="property">class </em><tt class="descclassname">webgme::</tt><tt class="descname">ObjectMap</tt><a class="headerlink" href="#webgme::ObjectMap" title="Permalink to this definition">¶</a></dt>
+<dd><p>The <tt class="docutils literal"><span class="pre">ObjectMap</span></tt> class emulates a hash/map of all available JavaScript attributes of an object so these attributes
+can be accessed from C++ conveniently. It is meant to simplify the convoluted way of accessing a member variable in
+V8. A code comparison is presented for motivation:</p>
+<p>The normal V8 way:</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">object</span> <span class="o">=</span> <span class="n">arg</span><span class="p">;</span> <span class="c1">// Assume object is passed in as an argument</span>
+<span class="n">Handle</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span> <span class="n">key1</span> <span class="o">=</span> <span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;foo&quot;</span><span class="p">);</span>
+<span class="n">object</span><span class="o">-&gt;</span><span class="n">ToObject</span><span class="p">()</span><span class="o">-&gt;</span><span class="n">Get</span><span class="p">(</span><span class="n">key</span><span class="p">);</span>
+<span class="n">Handle</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span> <span class="n">key2</span> <span class="o">=</span> <span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;baz&quot;</span><span class="p">);</span>
+<span class="n">object</span><span class="o">-&gt;</span><span class="n">ToObject</span><span class="p">()</span><span class="o">-&gt;</span><span class="n">Get</span><span class="p">(</span><span class="n">key</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Using ObjectMap:</p>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">ObjectMap</span> <span class="nf">object</span><span class="p">(</span><span class="n">arg</span><span class="p">);</span> <span class="c1">// Assume object is passed in as an argument</span>
+<span class="n">object</span><span class="p">[</span><span class="s">&quot;foo&quot;</span><span class="p">];</span>
+<span class="n">object</span><span class="p">[</span><span class="s">&quot;baz&quot;</span><span class="p">];</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="member">
+<dt id="ObjectMap::object___Persistent:Object:">
+Persistent&lt;Object&gt; <tt class="descclassname">ObjectMap::</tt><tt class="descname">object_</tt><a class="headerlink" href="#ObjectMap::object___Persistent:Object:" title="Permalink to this definition">¶</a></dt>
+<dd><p>Member variable to hold the object that contains methods of interest. This object is assigned when the constructor
+of this class is called.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::ObjectMap::subscript-operator__cCPC">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::ObjectMap::</tt><tt class="descname">operator[]</tt><big>(</big>const char* <em>key</em><big>)</big><tt class="descclassname"> const</tt><a class="headerlink" href="#webgme::ObjectMap::subscript-operator__cCPC" title="Permalink to this definition">¶</a></dt>
+<dd><p>Overrides the <tt class="docutils literal"><span class="pre">[]</span></tt> operator so that object attributes can be accessed conveniently.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name" colspan="2">Parameters const char* key:</th></tr>
+<tr class="field-odd field"><td>&nbsp;</td><td class="field-body">The member attribute identifier</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">The object attribute</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="class">
+<dt id="webgme::TasyncCallable">
+<em class="property">class </em><tt class="descclassname">webgme::</tt><tt class="descname">TasyncCallable</tt><a class="headerlink" href="#webgme::TasyncCallable" title="Permalink to this definition">¶</a></dt>
+<dd><p>A wrapper for JavaScript functions that serves to make function calls more natural to C++ users. The utility of this
+wrapper is demonstrated with an example in which a JavaScript function with two arguments is called via TASYNC from C++.</p>
+<p>The normal V8 way:</p>
+<div class="highlight-c++"><div class="highlight"><pre>   <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">node</span> <span class="o">=</span> <span class="n">arg</span><span class="p">;</span> <span class="c1">// Assume the object arg is passed in as an argument</span>
+   <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Function</span><span class="o">&gt;</span> <span class="n">foo</span> <span class="o">=</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Function</span><span class="o">&gt;::</span><span class="n">Cast</span><span class="p">(</span><span class="n">node</span><span class="o">-&gt;</span><span class="n">Get</span><span class="p">(</span><span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;foo&quot;</span><span class="p">)));</span>
+   <span class="k">const</span> <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">argc</span><span class="o">=</span><span class="mi">2</span><span class="p">;</span>
+   <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Value</span><span class="o">&gt;</span> <span class="n">argv</span><span class="p">[</span><span class="n">argc</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;bar&quot;</span><span class="p">),</span> <span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;buz&quot;</span><span class="p">)};</span>
+   <span class="n">WebGME</span><span class="o">::</span><span class="n">CallTasyncMethod</span><span class="p">(</span><span class="n">foo</span><span class="p">,</span> <span class="n">argc</span><span class="p">,</span> <span class="n">argv</span><span class="p">,</span> <span class="n">node</span><span class="p">);</span>
+
+<span class="n">Using</span> <span class="n">TasyncCallable</span> <span class="n">wrapper</span><span class="o">:</span>
+</pre></div>
+</div>
+<div class="highlight-c++"><div class="highlight"><pre><span class="n">TasyncCallable</span> <span class="nf">foo</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span><span class="s">&quot;foo&quot;</span><span class="p">);</span> <span class="c1">// Assume the object arg is passed in as an argument</span>
+<span class="n">foo</span><span class="p">(</span><span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;bar&quot;</span><span class="p">),</span> <span class="n">String</span><span class="o">::</span><span class="n">New</span><span class="p">(</span><span class="s">&quot;buz&quot;</span><span class="p">));</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::TasyncCallable::TasyncCallable__Handle:Value:.cCP">
+ <tt class="descclassname">webgme::TasyncCallable::</tt><tt class="descname">TasyncCallable</tt><big>(</big>Handle&lt;Value&gt; <em>o</em>, const char* <em>key</em><big>)</big><a class="headerlink" href="#webgme::TasyncCallable::TasyncCallable__Handle:Value:.cCP" title="Permalink to this definition">¶</a></dt>
+<dd><p>Constructor that creates a function object using the passed in object <tt class="docutils literal"><span class="pre">o</span></tt> and the member function identifier <tt class="docutils literal"><span class="pre">key</span></tt></p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>Handle&lt;Value&gt; o</strong> &#8211; The object that contains the member function of interest</li>
+<li><strong>const char* key</strong> &#8211; The member function identifier</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="member">
+<dt id="func___Persistent:Function:">
+Persistent&lt;Function&gt; <tt class="descname">func_</tt><a class="headerlink" href="#func___Persistent:Function:" title="Permalink to this definition">¶</a></dt>
+<dd><p>Persistent function object to hold the function object identified by the object <tt class="docutils literal"><span class="pre">o</span></tt> and identifier <tt class="docutils literal"><span class="pre">key</span></tt>.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::TasyncCallable::Call__unsigned-iC.Handle:Value:A">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::TasyncCallable::</tt><tt class="descname">Call</tt><big>(</big>const unsigned int <em>argc</em><em>=0</em>, Handle&lt;Value&gt; <em>argv</em>[]<em>=NULL</em><big>)</big><a class="headerlink" href="#webgme::TasyncCallable::Call__unsigned-iC.Handle:Value:A" title="Permalink to this definition">¶</a></dt>
+<dd><p>Method that makes the JavaScript call using TASYNC and the given arguments. The signature of this function follows
+the conventional way of calling JavaScript functions in V8 where an array of arguments and the length of the array
+as passed as arguments to <tt class="docutils literal"><span class="pre">Call</span></tt>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>const unsigned int argc = 0</strong> &#8211; Number of arguments</li>
+<li><strong>Handle&lt;Value&gt; argv[] = NULL</strong> &#8211; Array of arguments</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">return value of the JavaScript function call</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::TasyncCallable::CallVar__X">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::TasyncCallable::</tt><tt class="descname">CallVar</tt><big>(</big><em>...</em><big>)</big><a class="headerlink" href="#webgme::TasyncCallable::CallVar__X" title="Permalink to this definition">¶</a></dt>
+<dd></dd></dl>
+
+<dl class="function">
+<dt id="webgme::TasyncCallable::call-operator__X">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::TasyncCallable::</tt><tt class="descname">operator()</tt><big>(</big><em>...</em><big>)</big><a class="headerlink" href="#webgme::TasyncCallable::call-operator__X" title="Permalink to this definition">¶</a></dt>
+<dd><p>Method that makes the JavaScript call using TASYNC and the given arguments. The signature of this function follows
+the natural way of calling functions in C++. It takes a variable number of arguments and creates the necessary
+argument arrays for subsequent calls to TASYNC.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The function uses variadic templates, a feature of C++0x or later.  If the available compiler does not support variadic templates, the regular <tt class="docutils literal"><span class="pre">Call</span></tt> method can be used instead.</p>
+</div>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name" colspan="2">Parameters A...args:</th></tr>
+<tr class="field-odd field"><td>&nbsp;</td><td class="field-body">Arguments of possibly different types</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">return value of the JavaScript function call</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="webgme::FunctionMap::subscript-operator__cCPC">
+Handle&lt;Value&gt; <tt class="descclassname">webgme::FunctionMap::</tt><tt class="descname">operator[]</tt><big>(</big>const char* <em>key</em><big>)</big><tt class="descclassname"> const</tt><a class="headerlink" href="#webgme::FunctionMap::subscript-operator__cCPC" title="Permalink to this definition">¶</a></dt>
+<dd><p>Same as the <tt class="docutils literal"><span class="pre">[]</span></tt> operator in ObjectMap but the returns value is wrapped with TasyncCallable</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name" colspan="2">Parameters const char* key:</th></tr>
+<tr class="field-odd field"><td>&nbsp;</td><td class="field-body">The member function identifier</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">The member function object wrapped in a TasyncCallable</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">API Reference</a><ul>
+<li><a class="reference internal" href="#the-webgme-namespace">The <tt class="docutils literal"><span class="pre">webgme</span></tt> Namespace</a></li>
+<li><a class="reference internal" href="#objectmap-and-functonmap">ObjectMap and FunctonMap</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="interpreter.html"
+                        title="previous chapter">Writing an Interpreter in C++</a></p>
+  <h3>This Page</h3>
+  <ul class="this-page-menu">
+    <li><a href="_sources/api.txt"
+           rel="nofollow">Show Source</a></li>
+  </ul>
+<div id="searchbox" style="display: none">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="interpreter.html" title="Writing an Interpreter in C++"
+             >previous</a> |</li>
+        <li><a href="index.html">WebGME node.js to C++ bridge 0.1 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+        &copy; Copyright 2013, Addisu Z. Taddese.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.
+    </div>
+  </body>
+</html>
