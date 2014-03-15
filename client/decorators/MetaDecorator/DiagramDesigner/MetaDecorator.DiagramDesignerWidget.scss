@@ -1,20 +1,22 @@
 @import "../../../scss/Widgets/DiagramDesigner/Connector";
-@import "Attribute";
-@import "Constraint";
 
 $min-width: 90px;
 $height: 40px;
 $border: 1px solid #000000;
-$padding: 0 17px 0 17px;
+$padding: 0 3px 0 3px;
+$name-padding: 0 17px 0 17px;
 $background-color: #FFFFFF;
 $selected-background-color: lighten($background-color, 10);
 $selected-border: 1px solid #52A8EC;
 $attributes-add-new-hover-background-color: #DBEAFC;
 $selected-attributes-add-new-hover-background-color: #FFFFC0;
+$selected-attributes-add-new-hover-color: #000000;
 $attribute-height: 16px;
 $hover-background-color: #EEE;
 $section-title-background-color: #F3F3F3;
+$section-title-color: #000000;
 $abstract-class-name-color: #AAAAAA;
+$selected-box-shadow: 0px 0px 15px 0px #1276D4 !important;
 
 .meta-decorator {
   min-width: $min-width;
@@ -32,7 +34,7 @@ $abstract-class-name-color: #AAAAAA;
     overflow: hidden;
     text-overflow: ellipsis;
     border-bottom: 1px solid #000000;
-    padding: $padding;
+    padding: $name-padding;
 
     input {
       height: 16px !important;
@@ -42,7 +44,8 @@ $abstract-class-name-color: #AAAAAA;
   }
 
   .attributes,
-  .constraints{
+  .constraints,
+  .aspects {
     font-size: 10px;
     min-height: 1px;
     margin-bottom: 0;
@@ -78,34 +81,40 @@ $abstract-class-name-color: #AAAAAA;
   }
 
   .attributes {
-    @include attribute();
   }
 
   .constraints {
-    @include constraint();
+  }
+
+  .aspects {
   }
 
   .add-new-attribute,
-  .add-new-constraint {
+  .add-new-constraint,
+  .add-new-aspect {
     font-size: 10px;
     cursor: pointer;
 
     &:hover {
       background-color: $attributes-add-new-hover-background-color;
+      color: $selected-attributes-add-new-hover-color;
     }
   }
 
   .attributes-title,
-  .constraints-title {
+  .constraints-title,
+  .aspects-title {
     font-size: 9px;
     font-weight: bold;
     text-transform: uppercase;
     text-align: center;
     background-color: $section-title-background-color;
+    color: $section-title-color;
     line-height: 13px;
   }
 
-  .constraints-title {
+  .constraints-title,
+  .aspects-title {
     border-top: 1px dashed #999999;
   }
 
@@ -154,9 +163,13 @@ $abstract-class-name-color: #AAAAAA;
   .meta-decorator {
     border: $selected-border;
     background-color: $selected-background-color;
+    -webkit-box-shadow: $selected-box-shadow;
+    -moz-box-shadow: $selected-box-shadow;
+    box-shadow: $selected-box-shadow;
 
     .add-new-attribute,
-    .add-new-constraint {
+    .add-new-constraint,
+    .add-new-aspect {
       &:hover {
         background-color: $selected-attributes-add-new-hover-background-color;
       }
@@ -168,7 +181,8 @@ $abstract-class-name-color: #AAAAAA;
   &.highlight-mode {
     .meta-decorator {
       .attributes,
-      .constraints {
+      .constraints,
+      .aspects {
         li {
           div {
             &:hover {

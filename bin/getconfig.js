@@ -44,13 +44,10 @@ if (typeof define !== "function" && typeof require === "function" && typeof proc
 		"use strict";
 
 		var GLOBAL = {
-			host: '127.0.0.1',
-			port: 80,
-			project: "test",
+            port: 80,
 			autorecconnect: true,
 			reconndelay: 1000,
 			reconnamount: 1000,
-			autostart: false,
 
 			//used by the server
 			loglevel: 2, // 5 = ALL, 4 = DEBUG, 3 = INFO, 2 = WARNING, 1 = ERROR, 0 = OFF
@@ -62,7 +59,8 @@ if (typeof define !== "function" && typeof require === "function" && typeof proc
             httpsecure: false,
             guest: false,
             sessioncookieid : 'webgmeSid',
-            sessioncookiesecret : 'meWebGMEez'
+            sessioncookiesecret : 'meWebGMEez',
+            debug: false
 		};
 
 		if (LOCAL) {

@@ -10,14 +10,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
     function Database (options) {
         ASSERT(typeof options === "object");
 
-        options.host = options.host || "http://localhost";
-        options.port = options.port || 80;
         options.type = options.type || "browser";
         options.timeout = options.timeout || 10000;
 
-        if (options.host.substr(0, 7) !== "http://" && options.host.substr(0, 8) !== "https://") {
-            options.host = "http://" + options.host;
-        }
+        var _hostAddress = window.location.protocol + '//' + window.location.host;
+
 
         var socketConnected = false, socket = null, status = null, reconnect = false, getDbStatusCallbacks = {}, callbacks = {}, getBranchHashCallbacks = {}, IO = null, projects = {}, references = {}, ERROR_DISCONNECTED =
             'The socket.io is disconnected', ERROR_TIMEOUT = "no valid response arrived in time", STATUS_NETWORK_DISCONNECTED = "socket.io is disconnected";
@@ -118,7 +115,7 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                 };
 
                 var IOReady = function () {
-                    socket = IO.connect(options.host + ":" + options.port, {
+                    socket = IO.connect(_hostAddress,{
                         'connect timeout': 10,
                         'reconnection delay': 1,
                         'force new connection': true,
@@ -172,7 +169,7 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                 };
 
                 if (options.type === 'browser') {
-                    require([ options.host + ":" + options.port + "/socket.io/socket.io.js" ], function () {
+                    require([ _hostAddress + "/socket.io/socket.io.js" ], function () {
                         IO = io;
                         IOReady();
                     });
@@ -197,9 +194,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('closeDatabase', function (err) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -215,9 +214,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('fsyncDatabase', function (err) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -264,9 +265,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('getProjectNames', function (err, names) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err, names);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err, names);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -282,9 +285,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('getAllowedProjectNames', function (err, names) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err, names);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err, names);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -299,9 +304,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('getAuthorizationInfo', name, function (err, authInfo) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err, authInfo);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err, authInfo);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -317,9 +324,11 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
                     to: setTimeout(callbackTimeout, options.timeout, guid)
                 };
                 socket.emit('deleteProject', project, function (err) {
-                    clearTimeout(callbacks[guid].to);
-                    delete callbacks[guid];
-                    callback(err);
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err);
+                    }
                 });
             } else {
                 callback(new Error(ERROR_DISCONNECTED));
@@ -629,6 +638,63 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
             }
         }
 
+        function simpleRequest (parameters,callback){
+            ASSERT(typeof callback === 'function');
+            if(socketConnected){
+                var guid = GUID();
+                callbacks[guid] = {
+                    cb: callback,
+                    to: setTimeout(callbackTimeout,100*options.timeout, guid)
+                };
+                socket.emit('simpleRequest',parameters,function(err,resId){
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err,resId);
+                    }
+                });
+            } else {
+                callback(new Error(ERROR_DISCONNECTED));
+            }
+        }
+        function simpleResult (resultId,callback){
+            ASSERT(typeof callback === 'function');
+            if(socketConnected){
+                var guid = GUID();
+                callbacks[guid] = {
+                    cb: callback,
+                    to: setTimeout(callbackTimeout,100*options.timeout, guid)
+                };
+                socket.emit('simpleResult',resultId,function(err,result){
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err,result);
+                    }
+                });
+            } else {
+                callback(new Error(ERROR_DISCONNECTED));
+            }
+        }
+        function getToken(callback){
+            ASSERT(typeof callback === 'function');
+            if(socketConnected){
+                var guid = GUID();
+                callbacks[guid] = {
+                    cb: callback,
+                    to: setTimeout(callbackTimeout,100*options.timeout, guid)
+                };
+                socket.emit('getToken',function(err,result){
+                    if(callbacks[guid]){
+                        clearTimeout(callbacks[guid].to);
+                        delete callbacks[guid];
+                        callback(err,result);
+                    }
+                });
+            } else {
+                callback(new Error(ERROR_DISCONNECTED));
+            }
+        }
         return {
             openDatabase: openDatabase,
             closeDatabase: closeDatabase,
@@ -638,7 +704,10 @@ define([ "util/assert", "util/guid" ], function (ASSERT, GUID) {
             getAllowedProjectNames: getAllowedProjectNames,
             getAuthorizationInfo: getAuthorizationInfo,
             deleteProject: deleteProject,
-            openProject: openProject
+            openProject: openProject,
+            simpleRequest: simpleRequest,
+            simpleResult: simpleResult,
+            getToken: getToken
         };
     }
     return Database;

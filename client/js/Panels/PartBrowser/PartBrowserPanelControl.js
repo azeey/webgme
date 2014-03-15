@@ -4,11 +4,15 @@ define(['logManager',
     'js/Constants',
     'js/Utils/GMEConcepts',
     'js/NodePropertyNames',
-    'js/Utils/METAAspectHelper'], function (logManager,
+    'js/RegistryKeys',
+    'js/Utils/METAAspectHelper',
+    'js/Utils/PreferencesHelper'], function (logManager,
                              CONSTANTS,
                              GMEConcepts,
                              nodePropertyNames,
-                             METAAspectHelper) {
+                             REGISTRY_KEYS,
+                             METAAspectHelper,
+                             PreferencesHelper) {
 
     var PartBrowserControl,
         WIDGET_NAME = 'PartBrowser',
@@ -29,6 +33,9 @@ define(['logManager',
         //decorators can use it to ask for notifications about their registered sub IDs
         this._componentIDPartIDMap = {};
 
+        //by default handle the 'All' aspect
+        this._aspect = CONSTANTS.ASPECT_ALL;
+
         this._initDragDropFeatures();
 
         this._logger = logManager.create("PartBrowserControl");
@@ -37,13 +44,23 @@ define(['logManager',
         METAAspectHelper.addEventListener(METAAspectHelper.events.META_ASPECT_CHANGED, function () {
             self._processContainerNode(self._containerNodeId);
         });
+
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, function (model, activeObject) {
+            self.selectedObjectChanged(activeObject);
+        });
+
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_ASPECT, function (model, activeAspect) {
+            self.selectedAspectChanged(activeAspect);
+        });
     };
 
     PartBrowserControl.prototype.selectedObjectChanged = function (nodeId) {
-        this._logger.debug("SELECTEDOBJECT_CHANGED nodeId '" + nodeId + "'");
+        var self = this;
+
+        this._logger.debug("activeObject: '" + nodeId + "'");
 
         //remove current territory patterns
-        if (this._containerNodeId) {
+        if (this._territoryId) {
             this._client.removeUI(this._territoryId);
             this._partBrowserView.clear();
         }
@@ -51,12 +68,16 @@ define(['logManager',
         this._containerNodeId = nodeId;
         this._validChildrenTypeIDs = [];
 
-        if (this._containerNodeId) {
+        this._aspect = WebGMEGlobal.State.getActiveAspect();
+
+        if (this._containerNodeId || this._containerNodeId === CONSTANTS.PROJECT_ROOT_ID) {
             //put new node's info into territory rules
             this._selfPatterns = {};
             this._selfPatterns[nodeId] = { "children": 1 };
 
-            this._territoryId = this._client.addUI(this, true);
+            this._territoryId = this._client.addUI(this, function (events) {
+                self._eventCallback(events);
+            });
             //update the territory
             this._logger.debug('UPDATING TERRITORY: selectedObjectChanged' + JSON.stringify(this._selfPatterns));
             this._client.updateTerritory(this._territoryId, this._selfPatterns);
@@ -71,18 +92,18 @@ define(['logManager',
             objDescriptor = {};
 
             objDescriptor.id = nodeObj.getId();
-            objDescriptor.decorator = nodeObj.getRegistry(nodePropertyNames.Registry.decorator) || DEFAULT_DECORATOR;
+            objDescriptor.decorator = nodeObj.getRegistry(REGISTRY_KEYS.DECORATOR) || DEFAULT_DECORATOR;
             objDescriptor.name = nodeObj.getAttribute(nodePropertyNames.Attributes.name);
         }
 
         return objDescriptor;
     };
 
-    PartBrowserControl.prototype.onOneEvent = function (events) {
+    PartBrowserControl.prototype._eventCallback = function (events) {
         var i = events ? events.length : 0,
             e;
 
-        this._logger.debug("onOneEvent '" + i + "' items, events: " + JSON.stringify(events));
+        this._logger.debug("_eventCallback '" + i + "' items, events: " + JSON.stringify(events));
 
         while (i--) {
             e = events[i];
@@ -101,7 +122,7 @@ define(['logManager',
 
         this._updateValidChildrenTypeDecorators();
 
-        this._logger.debug("onOneEvent '" + events.length + "' items - DONE");
+        this._logger.debug("_eventCallback '" + events.length + "' items - DONE");
     };
 
     // PUBLIC METHODS
@@ -120,7 +141,6 @@ define(['logManager',
     PartBrowserControl.prototype._onUnload = function (gmeID) {
         if (this._containerNodeId === gmeID) {
             this._logger.warning('Container node got unloaded...');
-            this._client.removeUI(this._territoryId);
             this._validChildrenTypeIDs = [];
             this._partBrowserView.clear();
         }
@@ -215,6 +235,8 @@ define(['logManager',
         desc.control = this;
         desc.metaInfo = {};
         desc.metaInfo[CONSTANTS.GME_ID] = id;
+        desc.preferencesHelper = PreferencesHelper.getPreferences();
+        desc.aspect = this._aspect;
 
         return desc;
     };
@@ -301,7 +323,8 @@ define(['logManager',
             getDecoratorTerritoryQueries,
             territoryChanged = false,
             _selfPatterns = this._selfPatterns,
-            partEnabled;
+            partEnabled,
+            _aspectTypes = undefined;
 
         getDecoratorTerritoryQueries = function (decorator) {
             var query,
@@ -326,20 +349,47 @@ define(['logManager',
         //clear view
         this._partBrowserView.clear();
 
+        //set aspect types
+        if (this._aspect !== CONSTANTS.ASPECT_ALL) {
+            var metaAspectDesc = this._client.getMetaAspect(this._containerNodeId, this._aspect);
+            if (metaAspectDesc) {
+                //metaAspectDesc.items contains the children types the user specified to participate in this aspect
+                _aspectTypes =  metaAspectDesc.items || [];
+            }
+        }
+
         //filter out the types that doesn't need to be displayed for whatever reason:
         // - don't display validConnectionTypes
+        // - don't display abstract items
+        // - bcos they are not in the current aspects META rules
         i = this._validChildrenTypeIDs.length;
         while (i--) {
             id = this._validChildrenTypeIDs[i];
-            if (GMEConcepts.isConnectionType(id) === false) {
-                childrenTypeToDisplay.push(id);
+            if (GMEConcepts.isConnectionType(id) === false &&
+                GMEConcepts.isAbstract(id) === false) {
 
-                objDesc = this._getObjectDescriptor(id);
-                if (names.indexOf(objDesc.name) === -1) {
-                    names.push(objDesc.name);
-                    mapNameID[objDesc.name] = [id];
+                if (_aspectTypes) {
+                    //user defined aspect
+                    //check if 'id' is descendant of any user defined aspect type
+                    j = _aspectTypes.length;
+                    while (j--) {
+                        if (this._client.isTypeOf(id, _aspectTypes[j])) {
+                            childrenTypeToDisplay.push(id);
+                            break;
+                        }
+                    }
                 } else {
-                    mapNameID[objDesc.name].push(id);
+                    childrenTypeToDisplay.push(id);
+                }
+
+                if (childrenTypeToDisplay.indexOf(id) !== -1) {
+                    objDesc = this._getObjectDescriptor(id);
+                    if (names.indexOf(objDesc.name) === -1) {
+                        names.push(objDesc.name);
+                        mapNameID[objDesc.name] = [id];
+                    } else {
+                        mapNameID[objDesc.name].push(id);
+                    }
                 }
             }
         }
@@ -376,6 +426,17 @@ define(['logManager',
 
         if (territoryChanged) {
             this._doUpdateTerritory(true);
+        }
+    };
+
+
+    PartBrowserControl.prototype.selectedAspectChanged = function (aspect) {
+        if (this._aspect !== aspect) {
+            this._aspect = aspect;
+
+            this._logger.debug("activeAspect: '" + aspect + "'");
+
+            this._refreshPartList();
         }
     };
 

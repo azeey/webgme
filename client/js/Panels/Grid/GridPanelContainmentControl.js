@@ -16,11 +16,9 @@ define(['logManager',
         this._panel = options.panel;
         this._dataGridWidget = options.widget;
 
-        this._currentNodeId = null;
+        this._dataGridWidget.setNoWrapColumns(['ID', 'GUID']);
 
-        this._selectedObjectChanged = function (__project, nodeId) {
-            self.selectedObjectChanged(nodeId);
-        };
+        this._currentNodeId = null;
 
         this._logger = logManager.create("GridPanelContainmentControl");
 
@@ -31,17 +29,19 @@ define(['logManager',
     };
 
     GridPanelContainmentControl.prototype.selectedObjectChanged = function (nodeId) {
-        this._logger.debug("SELECTEDOBJECT_CHANGED nodeId '" + nodeId + "'");
+        var self = this;
+
+        this._logger.debug("activeObject '" + nodeId + "'");
 
         //remove current territory patterns
-        if (this._currentNodeId) {
+        if (this._territoryId) {
             this._client.removeUI(this._territoryId);
             this._dataGridWidget.clear();
         }
 
         this._currentNodeId = nodeId;
 
-        if (this._currentNodeId) {
+        if (this._currentNodeId || this._currentNodeId === CONSTANTS.PROJECT_ROOT_ID) {
             //put new node's info into territory rules
             this._selfPatterns = {};
             this._selfPatterns[nodeId] = { "children": 1 };
@@ -50,7 +50,9 @@ define(['logManager',
             var title = (desc.Attributes && desc.Attributes.name ? desc.Attributes.name + " " : "N/A ") + "(" + desc.ID + ")";
             this._panel.setTitle(title);
 
-            this._territoryId = this._client.addUI(this, true);
+            this._territoryId = this._client.addUI(this, function (events) {
+                self._eventCallback(events);
+            });
             //update the territory
             this._client.updateTerritory(this._territoryId, this._selfPatterns);
         }
@@ -61,11 +63,11 @@ define(['logManager',
         this._client.removeUI(this._territoryId);
     };
 
-    GridPanelContainmentControl.prototype.onOneEvent = function (events) {
+    GridPanelContainmentControl.prototype._eventCallback = function (events) {
         var i = events ? events.length : 0,
             e;
 
-        this._logger.debug("onOneEvent '" + i + "' items");
+        this._logger.debug("_eventCallback '" + i + "' items");
 
         this._insertList = [];
         this._updateList = [];
@@ -90,7 +92,7 @@ define(['logManager',
         this._dataGridWidget.updateObjects(this._updateList);
         this._dataGridWidget.deleteObjects(this._deleteList);
 
-        this._logger.debug("onOneEvent '" + events.length + "' items - DONE");
+        this._logger.debug("_eventCallback '" + events.length + "' items - DONE");
     };
 
     // PUBLIC METHODS
@@ -112,6 +114,7 @@ define(['logManager',
 
     GridPanelContainmentControl.prototype._discoverNode = function (gmeID) {
             var nodeDescriptor = {"ID": undefined,
+                                  "GUID": undefined,
                                   "ParentID": undefined,
                                   "Attributes": undefined,
                                   "Registry": undefined,
@@ -147,6 +150,7 @@ define(['logManager',
 
             if (cNode) {
                 nodeDescriptor.ID = gmeID;
+                nodeDescriptor.GUID = cNode.getGuid();
                 nodeDescriptor.ParentID = cNode.getParentId();
 
                 nodeDescriptor.Attributes = _getNodePropertyValues(cNode, "getAttributeNames", "getAttribute");
@@ -157,13 +161,17 @@ define(['logManager',
             return nodeDescriptor;
     };
 
+    GridPanelContainmentControl.prototype._stateActiveObjectChanged = function (model, activeObjectId) {
+        this.selectedObjectChanged(activeObjectId);
+    };
+
     GridPanelContainmentControl.prototype.attachClientEventListeners = function () {
         this.detachClientEventListeners();
-        this._client.addEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged, this);
     };
 
     GridPanelContainmentControl.prototype.detachClientEventListeners = function () {
-        this._client.removeEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.off('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged);
     };
 
     //attach GridPanelContainmentControl - DataGridViewEventHandlers event handler functions

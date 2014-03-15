@@ -1,8 +1,8 @@
 "use strict";
 
 var DEBUG = false;
-var _webGME_jquery_ver = '2.0.3';
-var _webGME_jqueryui_ver = '1.10.3';
+var _webGME_jquery_ver = '2.1.0';
+var _webGME_jqueryui_ver = '1.10.4';
 
 // configure require path and modules
 require.config({
@@ -14,16 +14,18 @@ require.config({
         "domReady":	'lib/require/domReady',
 
         //jQuery and stuff
-        "jquery": 'lib/jquery/' + (DEBUG ? 'jquery-' + _webGME_jquery_ver : 'jquery-' + _webGME_jquery_ver + '.min'),
-        "jquery-ui": 'lib/jquery/' + (DEBUG ? 'jquery-ui-' + _webGME_jqueryui_ver + '.custom' : 'jquery-ui-' + _webGME_jqueryui_ver + '.custom.min'),
+        "jquery": 'lib/jquery/jquery-' + _webGME_jquery_ver + '.min',
+        "jquery-ui": 'lib/jquery/jquery-ui-' + _webGME_jqueryui_ver + '.min',
         "jquery-ui-iPad": 'lib/jquery/jquery.ui.ipad',
         "jquery-WebGME": 'js/jquery.WebGME',
-        "jquery-dataTables": 'lib/jquery/jquery.dataTables' + (DEBUG ? '' : '.min'),
+        "jquery-dataTables": 'lib/jquery/jquery.dataTables.min',
         "jquery-dataTables-bootstrapped": 'lib/jquery/jquery.dataTables.bootstrapped',
+        "jquery-spectrum": 'lib/jquery/jquery.spectrum',
 
         //necessary 3rd party modules
         "bootstrap": 'lib/bootstrap/bootstrap.amd',
-        "underscore": 'lib/underscore/underscore'+ (DEBUG ? '': '-min'),
+        "underscore": 'lib/underscore/underscore-min',
+        "backbone": 'lib/backbone/backbone.min',
         "d3": 'lib/d3/d3.v3.min',
         "jscolor": 'lib/jscolor/jscolor',
 
@@ -46,12 +48,14 @@ require.config({
         'jquery-ui': ['jquery'],
         'jquery-ui-iPad': ['jquery','jquery-ui'],
         'bootstrap': ['jquery'],
+        'backbone': ['underscore'],
         'clientUtil': ['jquery'],
         'jquery-WebGME': ['bootstrap'],
         'jquery-dataTables': ['jquery'],
         'jquery-dataTables-bootstrapped': ['jquery-dataTables'],
         'WebGME': ['jquery-WebGME'],
-        'jquery-csszoom': ['jquery-ui']
+        'jquery-csszoom': ['jquery-ui'],
+        'jquery-spectrum': ['jquery']
     }
 });
 
@@ -65,16 +69,23 @@ require(
         'jquery-dataTables-bootstrapped',
         'bootstrap',
         'underscore',
+        'backbone',
         'js/WebGME',
-        'clientUtil'
+        'clientUtil',
+        'bin/getconfig'
     ],
-    function (domReady, jQuery, jQueryUi, jQueryUiiPad, jqueryWebGME, jqueryDataTables, bootstrap, underscore, webGME, util) {
+    function (domReady, jQuery, jQueryUi, jQueryUiiPad, jqueryWebGME, jqueryDataTables, bootstrap, underscore, backbone, webGME, util, CONFIG) {
         domReady(function () {
-            var rel = util.getURLParameterByName('d').toLowerCase() === "rel";
+            //#1 set debug info from config file
+            if (CONFIG.hasOwnProperty('debug')) {
+                DEBUG = CONFIG['debug'];
+            }
 
-            //check if release mode requested from URL
-            //TODO: might need to be changed in long term
-            if (rel === true) {
+            //#2 check URL
+            var d = util.getURLParameterByName('d').toLowerCase();
+            if (d === 'debug') {
+                DEBUG = true;
+            } else if (d === 'rel') {
                 DEBUG = false;
             }
 

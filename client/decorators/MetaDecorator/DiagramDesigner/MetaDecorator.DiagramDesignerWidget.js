@@ -2,26 +2,31 @@
 
 define(['js/Constants',
     'js/NodePropertyNames',
+    'js/RegistryKeys',
     '../../DefaultDecorator/DiagramDesigner/DefaultDecorator.DiagramDesignerWidget',
     'text!./MetaDecorator.DiagramDesignerWidget.html',
     './Attribute',
     './AttributeDetailsDialog',
     'js/Panels/MetaEditor/MetaRelations',
     './MetaDecorator.DiagramDesignerWidget.Constraints',
+    './MetaDecorator.DiagramDesignerWidget.Aspects',
     './MetaTextEditorDialog',
     'css!./MetaDecorator.DiagramDesignerWidget'], function (CONSTANTS,
                                                           nodePropertyNames,
+                                                          REGISTRY_KEYS,
                                                           DefaultDecoratorDiagramDesignerWidget,
                                                           MetaDecoratorTemplate,
                                                           Attribute,
                                                           AttributeDetailsDialog,
                                                           MetaRelations,
                                                           MetaDecoratorDiagramDesignerWidgetConstraints,
+                                                          MetaDecoratorDiagramDesignerWidgetAspects,
                                                           MetaTextEditorDialog) {
 
     var MetaDecoratorDiagramDesignerWidget,
         DECORATOR_ID = "MetaDecorator",
-        ABSTRACT_CLASS = 'abstract';
+        ABSTRACT_CLASS = 'abstract',
+        TEXT_META_EDIT_BTN_BASE = $('<i class="icon-cog text-meta"/>');
 
     MetaDecoratorDiagramDesignerWidget = function (options) {
 
@@ -36,7 +41,9 @@ define(['js/Constants',
                             "$attributesContainer": undefined,
                             "$addAttributeContainer": undefined,
                             "$constraintsContainer": undefined,
-                            "$addConstraintContainer": undefined};
+                            "$addConstraintContainer": undefined,
+                            "$aspectsContainer": undefined,
+                            "$addAspectContainer": undefined};
 
         this.logger.debug("MetaDecorator ctor");
     };
@@ -44,6 +51,7 @@ define(['js/Constants',
     _.extend(MetaDecoratorDiagramDesignerWidget.prototype, DefaultDecoratorDiagramDesignerWidget.prototype);
     MetaDecoratorDiagramDesignerWidget.prototype.DECORATORID = DECORATOR_ID;
     _.extend(MetaDecoratorDiagramDesignerWidget.prototype, MetaDecoratorDiagramDesignerWidgetConstraints.prototype);
+    _.extend(MetaDecoratorDiagramDesignerWidget.prototype, MetaDecoratorDiagramDesignerWidgetAspects.prototype);
 
     /*********************** OVERRIDE DECORATORBASE MEMBERS **************************/
 
@@ -78,7 +86,6 @@ define(['js/Constants',
 
     MetaDecoratorDiagramDesignerWidget.prototype._renderContent = function () {
         var client = this._control._client,
-            nodeObj = client.getNode(this._metaInfo[CONSTANTS.GME_ID]),
             self = this;
 
         //render GME-ID in the DOM, for debugging
@@ -95,7 +102,6 @@ define(['js/Constants',
                 var attrName = $(this).find('.n').text().replace(":", ""),
                     attrNames,
                     dialog = new AttributeDetailsDialog(),
-                    /*desc = _.extend({}, nodeObj.getAttributeDescriptor(attrName));*/
                     atrMeta = client.getAttributeSchema(self._metaInfo[CONSTANTS.GME_ID],attrName);
                 var desc = _.extend({},{name:attrName,type:atrMeta.type,defaultValue:atrMeta.default});
                 if(atrMeta.enum && atrMeta.enum.length >0){
@@ -128,8 +134,11 @@ define(['js/Constants',
         //call the Constraint's extension's init render code
         this._renderContentConstraints();
 
+        //call the Aspect's extension's init render code
+        this._renderContentAspects();
+
         //render text-editor based META editing UI piece
-        this._skinParts.$textMetaEditorBtn = $('<i class="icon-cog text-meta"></i>');
+        this._skinParts.$textMetaEditorBtn = TEXT_META_EDIT_BTN_BASE.clone();
         this.$el.append(this._skinParts.$textMetaEditorBtn);
         this._skinParts.$textMetaEditorBtn.on('click', function (event) {
             if (self.hostDesignerItem.canvas.getIsReadOnlyMode() !== true) {
@@ -142,18 +151,10 @@ define(['js/Constants',
         if (this.hostDesignerItem.canvas.getIsReadOnlyMode() === true) {
             this._skinParts.$addAttributeContainer.detach();
             this._skinParts.$addConstraintContainer.detach();
+            this._skinParts.$addAspectContainer.detach();
         }
 
-        /* FILL WITH DATA */
-        if (nodeObj) {
-            this.name = nodeObj.getAttribute(nodePropertyNames.Attributes.name) || "";
-            this._refreshName();
-
-            this._updateAttributes();
-            this._updateConstraints();
-            this._updateAbstract();
-        }
-
+        this.update();
     };
 
     MetaDecoratorDiagramDesignerWidget.prototype.update = function () {
@@ -169,10 +170,45 @@ define(['js/Constants',
                 this._refreshName();
             }
 
+            this._updateColors();
             this._updateAttributes();
             this._updateConstraints();
             this._updateAbstract();
+            this._updateAspects();
         }
+    };
+
+    MetaDecoratorDiagramDesignerWidget.prototype._updateColors = function () {
+        this._getNodeColorsFromRegistry();
+
+        if (this.fillColor) {
+            this.$el.css({'background-color': this.fillColor});
+        } else {
+            this.$el.css({'background-color': ''});
+        }
+
+        if (this.borderColor) {
+            this.$el.css({'border-color': this.borderColor});
+            this._skinParts.$name.css({'border-color': this.borderColor});
+        } else {
+            this.$el.css({'border-color': '',
+                'box-shadow': ''});
+            this._skinParts.$name.css({'border-color': ''});
+        }
+
+        if (this.textColor) {
+            this.$el.css({'color': this.textColor});
+        } else {
+            this.$el.css({'color': ''});
+        }
+    };
+
+    MetaDecoratorDiagramDesignerWidget.prototype._getNodeColorsFromRegistry = function () {
+        var objID = this._metaInfo[CONSTANTS.GME_ID];
+
+        this.fillColor = this.preferencesHelper.getRegistry(objID, REGISTRY_KEYS.COLOR, false);
+        this.borderColor = this.preferencesHelper.getRegistry(objID, REGISTRY_KEYS.BORDER_COLOR, false);
+        this.textColor = this.preferencesHelper.getRegistry(objID, REGISTRY_KEYS.TEXT_COLOR, false);
     };
 
     MetaDecoratorDiagramDesignerWidget.prototype._refreshName = function () {
@@ -185,7 +221,7 @@ define(['js/Constants',
             nodeObj = client.getNode(this._metaInfo[CONSTANTS.GME_ID]);
 
         if (nodeObj) {
-            if (nodeObj.getRegistry(nodePropertyNames.Registry.isAbstract) === true) {
+            if (nodeObj.getRegistry(REGISTRY_KEYS.IS_ABSTRACT) === true) {
                 this.$el.addClass(ABSTRACT_CLASS);
             } else {
                 this.$el.removeClass(ABSTRACT_CLASS);
@@ -198,7 +234,7 @@ define(['js/Constants',
     /***************  CUSTOM DECORATOR PART ****************************/
     MetaDecoratorDiagramDesignerWidget.prototype._updateAttributes = function () {
         var client = this._control._client,
-            newAttributes = this._control._client.getOwnValidAttributeNames(this._metaInfo[CONSTANTS.GME_ID]),
+            newAttributes = client.getOwnValidAttributeNames(this._metaInfo[CONSTANTS.GME_ID]),
             len,
             displayedAttributes = this._attributeNames.slice(0),
             diff,
@@ -232,7 +268,6 @@ define(['js/Constants',
 
     MetaDecoratorDiagramDesignerWidget.prototype._addAttribute = function (attrName) {
         var client = this._control._client,
-            nodeObj = client.getNode(this._metaInfo[CONSTANTS.GME_ID]),
             attrMetaDescriptor = client.getAttributeSchema(this._metaInfo[CONSTANTS.GME_ID],attrName) ? {name:attrName,type:client.getAttributeSchema(this._metaInfo[CONSTANTS.GME_ID],attrName).type || "null"} : null;
 
         if (attrMetaDescriptor) {
@@ -406,10 +441,12 @@ define(['js/Constants',
         if (readOnly === true) {
             this._skinParts.$addAttributeContainer.detach();
             this._skinParts.$addConstraintContainer.detach();
+            this._skinParts.$addAspectContainer.detach();
             this.$el.find('input.new-attr').val('').blur();
         } else {
             this._skinParts.$addAttributeContainer.insertAfter(this._skinParts.$attributesContainer);
             this._skinParts.$addConstraintContainer.insertAfter(this._skinParts.$constraintsContainer);
+            this._skinParts.$addAspectContainer.insertAfter(this._skinParts.$aspectsContainer);
         }
     };
 
@@ -482,7 +519,8 @@ define(['js/Constants',
             cN,
             cE,
             cW,
-            cS;
+            cS,
+            disabledAreas = this._getDisabledConnectionAreas();
 
         //by default return the bounding box edge's midpoints
 
@@ -532,9 +570,25 @@ define(['js/Constants',
                 //it can be NORTH only if destination
                 //it can be SOUTH only if source
                 if (isEnd) {
-                    result.push(cN);
+                    //north is not disabled, use north only
+                    //otherwise use all
+                    if (disabledAreas.indexOf(cN.id) === -1) {
+                        result.push(cN);
+                    } else {
+                        result.push(cE);
+                        result.push(cS);
+                        result.push(cW);
+                    }
                 } else {
-                    result.push(cS);
+                    //south is not disabled, use south only
+                    //otherwise use all
+                    if (disabledAreas.indexOf(cS.id) === -1) {
+                        result.push(cS);
+                    } else {
+                        result.push(cN);
+                        result.push(cE);
+                        result.push(cW);
+                    }
                 }
             } else {
                 result.push(cN);

@@ -1,6 +1,8 @@
 "use strict";
 
-define(['js/NodePropertyNames'], function (nodePropertyNames) {
+define(['js/NodePropertyNames',
+        'js/RegistryKeys'], function (nodePropertyNames,
+                                      REGISTRY_KEYS) {
 
     var GridPanelContainmentControlEventHandlers;
 
@@ -92,6 +94,9 @@ define(['js/NodePropertyNames'], function (nodePropertyNames) {
             cDef = columnDefs[len];
             if (cDef.mData === 'ID' ||
                 cDef.mData === 'ParentID' ||
+                cDef.mData === 'GUID' ||
+                cDef.mData === 'Registry.' + REGISTRY_KEYS.META_SHEETS ||
+                cDef.mData === 'Registry.' + REGISTRY_KEYS.MANUAL_ASPECTS ||
                 cDef.mData.indexOf('Sets.') === 0 ||
                 cDef.mData.indexOf('Pointers.') === 0) {
                 cDef.bEditable = false;
@@ -107,7 +112,7 @@ define(['js/NodePropertyNames'], function (nodePropertyNames) {
         var cNode = this._client.getNode(id),
             attrVal;
 
-        if (cNode) {
+        /*if (cNode) {
             this._client.startTransaction();
 
             attrVal = this._fetchData(nData, "Attributes.name");
@@ -117,18 +122,18 @@ define(['js/NodePropertyNames'], function (nodePropertyNames) {
 
             attrVal = this._fetchData(nData, "Registry.decorator");
             if (attrVal !== null && attrVal !== undefined) {
-                this._client.setRegistry(id, nodePropertyNames.Registry.decorator, attrVal);
+                this._client.setRegistry(id, REGISTRY_KEYS.DECORATOR, attrVal);
             }
 
             attrVal = this._fetchData(nData, "Registry.position");
             if (attrVal !== null && attrVal !== undefined) {
                 attrVal.x = parseInt(attrVal.x, 10) || 0;
                 attrVal.y = parseInt(attrVal.y, 10) || 0;
-                this._client.setRegistry(id, nodePropertyNames.Registry.position, attrVal);
+                this._client.setRegistry(id, REGISTRY_KEYS.POSITION, attrVal);
             }
 
             this._client.completeTransaction();
-        }
+        }*/
     };
 
     GridPanelContainmentControlEventHandlers.prototype._fetchData = function (object, data) {

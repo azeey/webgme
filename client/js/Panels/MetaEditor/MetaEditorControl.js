@@ -3,18 +3,22 @@ define(['logManager',
     'js/Constants',
     'js/Utils/GMEConcepts',
     'js/NodePropertyNames',
+    'js/RegistryKeys',
     'js/Widgets/DiagramDesigner/DiagramDesignerWidget.Constants',
     './MetaEditorControl.DiagramDesignerWidgetEventHandlers',
     './MetaRelations',
-    './MetaEditorConstants'], function (logManager,
+    './MetaEditorConstants',
+    'js/Utils/PreferencesHelper'], function (logManager,
                                                         util,
                                                         CONSTANTS,
                                                         GMEConcepts,
                                                         nodePropertyNames,
+                                                        REGISTRY_KEYS,
                                                         DiagramDesignerWidgetConstants,
                                                         MetaEditorControlDiagramDesignerWidgetEventHandlers,
                                                         MetaRelations,
-                                                        MetaEditorConstants) {
+                                                        MetaEditorConstants,
+                                                        PreferencesHelper) {
 
     "use strict";
 
@@ -39,10 +43,6 @@ define(['logManager',
             throw ("ModelEditorControl can not be created");
         }
 
-        /*this._selectedObjectChanged = function (__project, nodeId) {
-            self.selectedObjectChanged(nodeId);
-        };*/
-
         if (this.diagramDesigner === undefined) {
             this.logger.error("ModelEditorControl's DiagramDesigner is not specified...");
             throw ("ModelEditorControl can not be created");
@@ -51,14 +51,19 @@ define(['logManager',
         //in METAEDITOR mode DRAG & COPY is not enabled
         this.diagramDesigner.enableDragCopy(false);
 
-        this._selfPatterns = {};
-        this.eventQueue = [];
+        this._metaAspectMemberPatterns = {};
 
         this._filteredOutConnTypes = [];
         this._filteredOutConnectionDescriptors = {};
 
         //local variable holding info about the currently opened node
         this.currentNodeInfo = {"id": null, "members" : [] };
+
+        this._metaAspectMembersAll = [];
+        this._metaAspectMembersPerSheet = {};
+        this._metaAspectMembersCoordinatesGlobal = {};
+        this._metaAspectMembersCoordinatesPerSheet = {};
+        this._selectedMetaAspectSheetMembers = [];
 
         //set default connection type to containment
         this._setNewConnectionType(MetaRelations.META_RELATIONS.CONTAINMENT);
@@ -68,146 +73,51 @@ define(['logManager',
         //attach all the event handlers for event's coming from DiagramDesigner
         this.attachDiagramDesignerWidgetEventHandlers();
 
-        //TODO: load meta container node
-        //TODO: give the UI time to render first before start using it's features
-        setTimeout(function () {
-            self.selectedObjectChanged(META_RULES_CONTAINER_NODE_ID);
-        }, 10);
+        //let the decorator-manager download the required decorator
+        this._client.decoratorManager.download([META_DECORATOR], WIDGET_NAME, function () {
+            self.logger.debug("MetaEditorControl ctor finished");
 
-
-        this.logger.debug("MetaEditorControl ctor finished");
+            //load meta container node
+            //give the UI time to render first before start using it's features
+            setTimeout(function () {
+                self._loadMetaAspectContainerNode();
+            }, 10);
+        });
     };
 
-    MetaEditorControl.prototype.selectedObjectChanged = function (nodeId) {
-        var desc = this._getObjectDescriptor(nodeId),
-            len;
+    MetaEditorControl.prototype._loadMetaAspectContainerNode = function () {
+        var self = this;
 
-        if (nodeId !== META_RULES_CONTAINER_NODE_ID) {
-            return;
-        }
+        this.metaAspectContainerNodeID = META_RULES_CONTAINER_NODE_ID;
 
-        this.logger.debug("SELECTEDOBJECT_CHANGED nodeId '" + nodeId + "'");
+        this.logger.debug("_loadMetaAspectContainerNode: '" + this.metaAspectContainerNodeID + "'");
 
-        //delete everything from model editor
-        this.diagramDesigner.clear();
-
-        //clean up local hash map
-        this._GMENodes = [];
-
-        this._GMEID2ComponentID = {};
-        this._ComponentID2GMEID = {};
-
-        this._connectionWaitingListByDstGMEID = {};
-        this._connectionWaitingListBySrcGMEID = {};
-
-        this._connectionListBySrcGMEID = {};
-        this._connectionListByDstGMEID = {};
-        this._connectionListByType = {};
-        this._connectionListByID = {};
-
-        this._nodeMetaContainment = {};
-        this._nodeMetaPointers = {};
-        this._nodeMetaPointerLists = {};
-        this._nodeMetaInheritance = {};
-
-        this._filteredOutConnectionDescriptors = {};
-        len = this._filteredOutConnTypes.length;
-        while (len--) {
-            this._filteredOutConnectionDescriptors[this._filteredOutConnTypes[len]] = [];
-        }
+        this._initializeSelectedSheet();
 
         //remove current territory patterns
-        if (this.currentNodeInfo.id) {
+        if (this._territoryId) {
             this._client.removeUI(this._territoryId);
         }
 
-        this.currentNodeInfo.id = nodeId;
-        this.currentNodeInfo.members = [];
+        //put new node's info into territory rules
+        this._selfPatterns = {};
+        this._selfPatterns[this.metaAspectContainerNodeID] = { "children": 0 };
 
-        if (nodeId) {
-            //put new node's info into territory rules
-            this._selfPatterns = {};
-            this._selfPatterns[nodeId] = { "children": 0 };
-
-
-            this.diagramDesigner.setTitle(desc.name);
-
-            this.diagramDesigner.showProgressbar();
-
-            this._territoryId = this._client.addUI(this, true);
-            //update the territory
-            this._client.updateTerritory(this._territoryId, this._selfPatterns);
-        }
+        //create and set territory
+        this._territoryId = this._client.addUI(this, function (events) {
+            self._eventCallback(events);
+        });
+        this._client.updateTerritory(this._territoryId, this._selfPatterns);
     };
 
     /**********************************************************/
     /*                    PUBLIC METHODS                      */
     /**********************************************************/
-    MetaEditorControl.prototype.onOneEvent = function (events) {
-        var i = events ? events.length : 0;
-
-        this.logger.debug("onOneEvent '" + i + "' items");
-
-        if (i > 0) {
-            this.eventQueue.push(events);
-            this._processNextInQueue();
-        }
-
-        this.logger.debug("onOneEvent '" + events.length + "' items - DONE");
-    };
-
-    //might not be the best approach
-    MetaEditorControl.prototype.destroy = function () {
-        this._detachClientEventListeners();
-        this._client.removeUI(this._territoryId);
-        this.diagramDesigner.clear();
-    };
-
-    /**********************************************************/
-    /*                   PRIVATE METHODS                      */
-    /**********************************************************/
-
-    /**********************************************************/
-    /*       EVENT AND DECORATOR DOWNLOAD HANDLING            */
-    /**********************************************************/
-    MetaEditorControl.prototype._processNextInQueue = function () {
-        var nextBatchInQueue,
-            len = this.eventQueue.length,
-            decoratorsToDownload = [],
-            itemDecorator,
-            self = this;
-
-        if (len > 0) {
-            nextBatchInQueue = this.eventQueue.pop();
-
-            len = nextBatchInQueue.length;
-
-            while (len--) {
-                if ( (nextBatchInQueue[len].etype === CONSTANTS.TERRITORY_EVENT_LOAD) || (nextBatchInQueue[len].etype === CONSTANTS.TERRITORY_EVENT_UPDATE)) {
-                    nextBatchInQueue[len].desc = this._getObjectDescriptor(nextBatchInQueue[len].eid);
-
-                    if (nextBatchInQueue[len].desc) {
-                        itemDecorator = nextBatchInQueue[len].desc.decorator;
-
-                        if (itemDecorator && itemDecorator !== "") {
-                            decoratorsToDownload.pushUnique(itemDecorator);
-                        }
-                    }
-                }
-            }
-
-            //few decorators need to be downloaded
-            this._client.decoratorManager.download(decoratorsToDownload, WIDGET_NAME, function () {
-                self._dispatchEvents(nextBatchInQueue);
-            });
-        }
-    };
-
-    MetaEditorControl.prototype._dispatchEvents = function (events) {
-        var i = events.length,
+    MetaEditorControl.prototype._eventCallback = function (events) {
+        var i = events ? events.length : 0,
             e;
 
-        this.logger.debug("_dispatchEvents '" + i + "' items");
+        this.logger.debug("_eventCallback '" + i + "' items");
 
         this.diagramDesigner.beginUpdate();
 
@@ -215,10 +125,10 @@ define(['logManager',
             e = events[i];
             switch (e.etype) {
                 case CONSTANTS.TERRITORY_EVENT_LOAD:
-                    this._onLoad(e.eid, e.desc);
+                    this._onLoad(e.eid);
                     break;
                 case CONSTANTS.TERRITORY_EVENT_UPDATE:
-                    this._onUpdate(e.eid, e.desc);
+                    this._onUpdate(e.eid);
                     break;
                 case CONSTANTS.TERRITORY_EVENT_UNLOAD:
                     this._onUnload(e.eid);
@@ -230,75 +140,47 @@ define(['logManager',
 
         this.diagramDesigner.hideProgressbar();
 
-        this.logger.debug("_dispatchEvents '" + events.length + "' items - DONE");
-
-        //continue processing event queue
-        this._processNextInQueue();
+        this.logger.debug("_eventCallback '" + events.length + "' items - DONE");
     };
-    /**********************************************************/
-    /*    END OF --- EVENT AND DECORATOR DOWNLOAD HANDLING    */
-    /**********************************************************/
 
-
-    /**********************************************************/
-    /*       READ IMPORTANT INFORMATION FROM A NODE           */
-    /**********************************************************/
-    MetaEditorControl.prototype._getObjectDescriptor = function (gmeID) {
-        var aspectNode = this._client.getNode(this.currentNodeInfo.id),
-            cNode = this._client.getNode(gmeID),
-            nodeDescriptor,
-            metaAspectPos;
-
-        if (cNode) {
-            nodeDescriptor = {"ID": gmeID,
-                "ParentID": cNode.getParentId(),
-                "decorator": META_DECORATOR,
-                "name": cNode.getAttribute(nodePropertyNames.Attributes.name) || "",
-                "position": { "x": -1, "y": -1 }};
-
-            if (gmeID !== this.currentNodeInfo.id) {
-                if (this.currentNodeInfo.members.indexOf(gmeID) !== -1) {
-                    metaAspectPos = aspectNode.getMemberRegistry(MetaEditorConstants.META_ASPECT_SET_NAME, gmeID, MetaEditorConstants.META_ASPECT_MEMBER_POSITION_REGISTRY_KEY);
-                    if (metaAspectPos) {
-                        nodeDescriptor.position.x = metaAspectPos.x;
-                        nodeDescriptor.position.y = metaAspectPos.y;
-                    }
-                }
-            }
-        }
-
-        return nodeDescriptor;
+    //might not be the best approach
+    MetaEditorControl.prototype.destroy = function () {
+        this._detachClientEventListeners();
+        this._client.removeUI(this._territoryId);
+        this._client.removeUI(this._metaAspectMembersTerritoryId);
+        this.diagramDesigner.clear();
     };
-    /**********************************************************/
-    /*  END OF --- READ IMPORTANT INFORMATION FROM A NODE     */
-    /**********************************************************/
 
 
     /**********************************************************/
     /*                LOAD / UPDATE / UNLOAD HANDLER          */
     /**********************************************************/
-    MetaEditorControl.prototype._onLoad = function (gmeID, objD) {
-        if (gmeID === this.currentNodeInfo.id) {
-            this._processCurrentNode();
+    MetaEditorControl.prototype._onLoad = function (gmeID) {
+        if (gmeID === this.metaAspectContainerNodeID) {
+            this._processMetaAspectContainerNode();
         } else {
-            this._processNodeLoad(gmeID, objD);
+            this._processNodeLoad(gmeID);
         }
     };
 
-    MetaEditorControl.prototype._onUpdate = function (gmeID, objD) {
-        if (gmeID === this.currentNodeInfo.id) {
-            this._processCurrentNode();
+    MetaEditorControl.prototype._onUpdate = function (gmeID) {
+        if (gmeID === this.metaAspectContainerNodeID) {
+            this._processMetaAspectContainerNode();
         } else {
-            this._processNodeUpdate(gmeID, objD);
+            this._processNodeUpdate(gmeID);
         }
     };
 
     MetaEditorControl.prototype._onUnload = function (gmeID) {
-        if (gmeID === this.currentNodeInfo.id) {
+        var self = this;
+
+        if (gmeID === this.metaAspectContainerNodeID) {
             //the opened model has been deleted....
-            this.logger.debug('The currently opened aspect has been deleted --- GMEID: "' + this.currentNodeInfo.id + '"');
-            this.diagramDesigner.setBackgroundText('The currently opened aspect has been deleted...', {'font-size': 30,
-                                                                                                     'color': '#000000'});
+            //most probably a project / branch / whatever change
+            this.logger.debug('The currently opened aspect has been deleted --- GMEID: "' + this.metaAspectContainerNodeID + '"');
+            setTimeout(function () {
+                self._loadMetaAspectContainerNode();
+            }, 10);
         } else {
             this._processNodeUnload(gmeID);
         }
@@ -362,38 +244,71 @@ define(['logManager',
     /***********************************************************/
     /*  PROCESS CURRENT NODE TO HANDLE ADDED / REMOVED ELEMENT */
     /***********************************************************/
-    MetaEditorControl.prototype._processCurrentNode = function () {
-        var aspectNode = this._client.getNode(this.currentNodeInfo.id),
+    MetaEditorControl.prototype._processMetaAspectContainerNode = function () {
+        var aspectNodeID = this.metaAspectContainerNodeID,
+            aspectNode = this._client.getNode(aspectNodeID),
             len,
             diff,
             objDesc,
             componentID,
             gmeID,
             metaAspectSetMembers = aspectNode.getMemberIds(MetaEditorConstants.META_ASPECT_SET_NAME),
-            territoryChanged = false;
+            territoryChanged = false,
+            selectedSheetMembers;
+
+        //this._metaAspectMembersAll contains all the currently known members of the meta aspect
+        //update current member list
+        this._metaAspectMembersAll = metaAspectSetMembers.slice(0);
+        len = this._metaAspectMembersAll.length;
+        this._metaAspectMembersCoordinatesGlobal = {};
+        while (len--) {
+            gmeID =  this._metaAspectMembersAll[len];
+            this._metaAspectMembersCoordinatesGlobal[gmeID] = aspectNode.getMemberRegistry(MetaEditorConstants.META_ASPECT_SET_NAME, gmeID, REGISTRY_KEYS.POSITION);
+        }
+
+        //process the sheets
+        var positionsUpdated = this._processMetaAspectSheetsRegistry();
+
+        this.logger.debug('_metaAspectMembersAll: \n' + JSON.stringify(this._metaAspectMembersAll));
+        this.logger.debug('_metaAspectMembersCoordinatesGlobal: \n' + JSON.stringify(this._metaAspectMembersCoordinatesGlobal));
+
+        this.logger.debug('_metaAspectMembersPerSheet: \n' + JSON.stringify(this._metaAspectMembersPerSheet));
+        this.logger.debug('_metaAspectMembersCoordinatesPerSheet: \n' + JSON.stringify(this._metaAspectMembersCoordinatesPerSheet));
+
+        //check to see if the territory needs to be changed
+        //the territory contains the nodes that are on the currently opened sheet
+        //this._selectedMetaAspectSheetMembers
+        selectedSheetMembers = this._metaAspectMembersPerSheet[this._selectedMetaAspectSet] || [];
 
         //check deleted nodes
-        diff = _.difference(this.currentNodeInfo.members, metaAspectSetMembers);
+        diff = _.difference(this._selectedMetaAspectSheetMembers, selectedSheetMembers);
         len = diff.length;
         while (len--) {
-            delete this._selfPatterns[diff[len]];
+            delete this._metaAspectMemberPatterns[diff[len]];
             territoryChanged = true;
         }
 
         //check added nodes
-        diff = _.difference(metaAspectSetMembers, this.currentNodeInfo.members);
+        diff = _.difference(selectedSheetMembers, this._selectedMetaAspectSheetMembers);
         len = diff.length;
         while (len--) {
-            this._selfPatterns[diff[len]] = { "children": 0 };
+            this._metaAspectMemberPatterns[diff[len]] = { "children": 0 };
             territoryChanged = true;
         }
 
         //check all other nodes for position change
-        diff = _.intersection(this.currentNodeInfo.members, metaAspectSetMembers);
+        //or any other change that could have happened (local registry modifications)
+        //diff = positionsUpdated;//_.intersection(this._selectedMetaAspectSheetMembers, selectedSheetMembers);
+        diff = _.intersection(this._selectedMetaAspectSheetMembers, selectedSheetMembers);
         len = diff.length;
         while (len--) {
             gmeID = diff[len];
-            objDesc = this._getObjectDescriptor(gmeID);
+            objDesc = {'position': {'x': 100, 'y': 100}};
+
+            if (this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID]) {
+                objDesc.position.x = this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID].x;
+                objDesc.position.y = this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID].y;
+            }
 
             if (this._GMEID2ComponentID.hasOwnProperty(gmeID)) {
                 componentID = this._GMEID2ComponentID[gmeID];
@@ -401,12 +316,11 @@ define(['logManager',
             }
         }
 
-        //update current member list
-        this.currentNodeInfo.members = metaAspectSetMembers.slice(0);
+        this._selectedMetaAspectSheetMembers = selectedSheetMembers.slice(0);
 
         //there was change in the territory
         if (territoryChanged === true) {
-            this._client.updateTerritory(this._territoryId, this._selfPatterns);
+            this._client.updateTerritory(this._metaAspectMembersTerritoryId, this._metaAspectMemberPatterns);
         }
     };
     /**********************************************************************/
@@ -417,7 +331,7 @@ define(['logManager',
     /**************************************************************************/
     /*  HANDLE OBJECT LOAD  --- DISPLAY IT WITH ALL THE POINTERS / SETS / ETC */
     /**************************************************************************/
-    MetaEditorControl.prototype._processNodeLoad = function (gmeID, objD) {
+    MetaEditorControl.prototype._processNodeLoad = function (gmeID) {
         var uiComponent,
             decClass,
             objDesc;
@@ -425,32 +339,38 @@ define(['logManager',
         //component loaded
         if (this._GMENodes.indexOf(gmeID) === -1) {
             //aspect's member has been loaded
-            if (objD && objD.position.x > -1 && objD.position.y > -1) {
-                objDesc = _.extend({}, objD);
+            objDesc = {'position' : { 'x': 100, 'y': 100}};
 
-                decClass = this._client.decoratorManager.getDecoratorForWidget(objDesc.decorator, WIDGET_NAME);
-
-                objDesc.decoratorClass = decClass;
-                objDesc.control = this;
-                objDesc.metaInfo = {};
-                objDesc.metaInfo[CONSTANTS.GME_ID] = gmeID;
-
-                uiComponent = this.diagramDesigner.createDesignerItem(objDesc);
-
-                this._GMENodes.push(gmeID);
-                this._GMEID2ComponentID[gmeID] = uiComponent.id;
-                this._ComponentID2GMEID[uiComponent.id] = gmeID;
-
-                //process new node to display containment / pointers / inheritance / pointerlists as connections
-                this._processNodeMetaContainment(gmeID);
-                this._processNodeMetaPointers(gmeID, false);
-                this._processNodeMetaInheritance(gmeID);
-                this._processNodeMetaPointers(gmeID, true);
-
-                //check all the waiting pointers (whose SRC/DST is already displayed and waiting for the DST/SRC to show up)
-                //it might be this new node
-                this._processConnectionWaitingList(gmeID);
+            if (this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID]) {
+                objDesc.position.x = this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID].x;
+                objDesc.position.y = this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet][gmeID].y;
             }
+
+            decClass = this._client.decoratorManager.getDecoratorForWidget(META_DECORATOR, WIDGET_NAME);
+
+            objDesc.decoratorClass = decClass;
+            objDesc.control = this;
+            objDesc.metaInfo = {};
+            objDesc.metaInfo[CONSTANTS.GME_ID] = gmeID;
+            //each meta specific registry customization will be stored in the MetaContainer node's main META SET (MetaEditorConstants.META_ASPECT_SET_NAME)
+            objDesc.preferencesHelper = PreferencesHelper.getPreferences([{'containerID': this.metaAspectContainerNodeID,
+                                                                            'setID': MetaEditorConstants.META_ASPECT_SET_NAME }]);
+
+            uiComponent = this.diagramDesigner.createDesignerItem(objDesc);
+
+            this._GMENodes.push(gmeID);
+            this._GMEID2ComponentID[gmeID] = uiComponent.id;
+            this._ComponentID2GMEID[uiComponent.id] = gmeID;
+
+            //process new node to display containment / pointers / inheritance / sets as connections
+            this._processNodeMetaContainment(gmeID);
+            this._processNodeMetaPointers(gmeID, false);
+            this._processNodeMetaInheritance(gmeID);
+            this._processNodeMetaPointers(gmeID, true);
+
+            //check all the waiting pointers (whose SRC/DST is already displayed and waiting for the DST/SRC to show up)
+            //it might be this new node
+            this._processConnectionWaitingList(gmeID);
         }
     };
 
@@ -555,12 +475,12 @@ define(['logManager',
             }
 
             //POINTER LISTS
-            len = this._nodeMetaPointerLists[gmeID].combinedNames.length;
+            len = this._nodeMetaSets[gmeID].combinedNames.length;
             while(len--) {
-                pointerName = this._nodeMetaPointerLists[gmeID].combinedNames[len];
-                otherEnd = this._nodeMetaPointerLists[gmeID][pointerName].target;
-                pointerName = this._nodeMetaPointerLists[gmeID][pointerName].name;
-                this._removeConnection(gmeID, otherEnd, MetaRelations.META_RELATIONS.POINTERLIST, pointerName);
+                pointerName = this._nodeMetaSets[gmeID].combinedNames[len];
+                otherEnd = this._nodeMetaSets[gmeID][pointerName].target;
+                pointerName = this._nodeMetaSets[gmeID][pointerName].name;
+                this._removeConnection(gmeID, otherEnd, MetaRelations.META_RELATIONS.SET, pointerName);
             }
 
             //finally delete the guy from the screen
@@ -620,7 +540,7 @@ define(['logManager',
             delete this._nodeMetaContainment[gmeID];
             delete this._nodeMetaPointers[gmeID];
             delete this._nodeMetaInheritance[gmeID];
-            delete this._nodeMetaPointerLists[gmeID];
+            delete this._nodeMetaSets[gmeID];
         }
     };
     /****************************************************************************/
@@ -866,16 +786,19 @@ define(['logManager',
     /**************************************************************************/
     /*  HANDLE OBJECT UPDATE  --- DISPLAY IT WITH ALL THE POINTERS / SETS / ETC */
     /**************************************************************************/
-    MetaEditorControl.prototype._processNodeUpdate = function(gmeID, objDesc) {
+    MetaEditorControl.prototype._processNodeUpdate = function(gmeID) {
         var componentID,
-            decClass;
+            decClass,
+            objDesc = {};
 
         if (this._GMEID2ComponentID.hasOwnProperty(gmeID)) {
             componentID = this._GMEID2ComponentID[gmeID];
 
-            decClass = this._client.decoratorManager.getDecoratorForWidget(objDesc.decorator, WIDGET_NAME);
+            decClass = this._client.decoratorManager.getDecoratorForWidget(META_DECORATOR, WIDGET_NAME);
 
             objDesc.decoratorClass = decClass;
+            objDesc.preferencesHelper = PreferencesHelper.getPreferences([{'containerID': this.metaAspectContainerNodeID,
+                'setID': MetaEditorConstants.META_ASPECT_SET_NAME }]);
 
             this.diagramDesigner.updateDesignerItem(componentID, objDesc);
 
@@ -964,9 +887,9 @@ define(['logManager',
     /*******************************************************************************/
     /*  DISPLAY META POINTER RELATIONS AS A CONNECTION FROM CONTAINER TO CONTAINED */
     /*******************************************************************************/
-    MetaEditorControl.prototype._processNodeMetaPointers = function (gmeID, isPointerList) {
+    MetaEditorControl.prototype._processNodeMetaPointers = function (gmeID, isSet) {
         var node = this._client.getNode(gmeID),
-            pointerNames = isPointerList === true ? node.getSetNames() : node.getPointerNames(),
+            pointerNames = isSet === true ? node.getSetNames() : node.getPointerNames(),
             pointerMetaDescriptor,
             pointerOwnMetaTypes,
             len,
@@ -978,14 +901,14 @@ define(['logManager',
             idx,
             lenTargets,
             combinedName,
-            ptrType = isPointerList === true ? MetaRelations.META_RELATIONS.POINTERLIST : MetaRelations.META_RELATIONS.POINTER;
+            ptrType = isSet === true ? MetaRelations.META_RELATIONS.SET : MetaRelations.META_RELATIONS.POINTER;
 
-        if (isPointerList !== true) {
+        if (isSet !== true) {
             this._nodeMetaPointers[gmeID] = this._nodeMetaPointers[gmeID] || {'names': [], 'combinedNames': []};
             oldMetaPointers = this._nodeMetaPointers[gmeID];
         } else {
-            this._nodeMetaPointerLists[gmeID] = this._nodeMetaPointerLists[gmeID] || {'names': [], 'combinedNames': []};
-            oldMetaPointers = this._nodeMetaPointerLists[gmeID];
+            this._nodeMetaSets[gmeID] = this._nodeMetaSets[gmeID] || {'names': [], 'combinedNames': []};
+            oldMetaPointers = this._nodeMetaSets[gmeID];
         }
 
         len = pointerNames.length;
@@ -1139,7 +1062,7 @@ define(['logManager',
             case MetaRelations.META_RELATIONS.POINTER:
                 this._createPointerRelationship(sourceId, targetId, false);
                 break;
-            case MetaRelations.META_RELATIONS.POINTERLIST:
+            case MetaRelations.META_RELATIONS.SET:
                 this._createPointerRelationship(sourceId, targetId, true);
                 break;
             default:
@@ -1168,7 +1091,7 @@ define(['logManager',
     };
 
 
-    MetaEditorControl.prototype._createPointerRelationship = function (sourceID, targetID, isPointerList) {
+    MetaEditorControl.prototype._createPointerRelationship = function (sourceID, targetID, isSet) {
         var sourceNode = this._client.getNode(sourceID),
             targetNode = this._client.getNode(targetID),
             pointerMetaDescriptor,
@@ -1177,7 +1100,7 @@ define(['logManager',
             self = this;
 
         if (sourceNode && targetNode) {
-            if (isPointerList === true) {
+            if (isSet === true) {
                 //this is a pointer list
                 existingPointerNames = sourceNode.getSetNames() || [];
                 notAllowedPointerNames = sourceNode.getPointerNames() || [];
@@ -1193,11 +1116,11 @@ define(['logManager',
             notAllowedPointerNames = notAllowedPointerNames.concat(MetaEditorConstants.RESERVED_POINTER_NAMES);
 
             //query pointer name from user
-            this.diagramDesigner.selectNewPointerName(existingPointerNames, notAllowedPointerNames, isPointerList, function (userSelectedPointerName) {
+            this.diagramDesigner.selectNewPointerName(existingPointerNames, notAllowedPointerNames, isSet, function (userSelectedPointerName) {
                 self._client.startTransaction();
                 pointerMetaDescriptor = self._client.getValidTargetItems(sourceID,userSelectedPointerName);
                 if(!pointerMetaDescriptor){
-                    if (isPointerList !== true) {
+                    if (isSet !== true) {
                         //single pointer
                         self._client.setPointerMeta(sourceID,userSelectedPointerName,{
                             "min":1,
@@ -1210,7 +1133,6 @@ define(['logManager',
                             ]
                         });
                         self._client.makePointer(sourceID,userSelectedPointerName,null);
-                        self._updateObjectConnectionVisualStyles(sourceID);
                     } else {
                         //pointer list
                         self._client.setPointerMeta(sourceID,userSelectedPointerName,{
@@ -1223,10 +1145,9 @@ define(['logManager',
                         self._client.createSet(sourceID,userSelectedPointerName);
                     }
                 } else {
-                    if (isPointerList !== true) {
+                    if (isSet !== true) {
                         //single pointer
                         self._client.updateValidTargetItem(sourceID,userSelectedPointerName,{id:targetID,max:1});
-                        self._updateObjectConnectionVisualStyles(sourceID);
                     } else {
                         //pointer list
                         self._client.updateValidTargetItem(sourceID,userSelectedPointerName,{id:targetID});
@@ -1239,7 +1160,7 @@ define(['logManager',
     };
 
 
-    MetaEditorControl.prototype._deletePointerRelationship = function (sourceID, targetID, pointerName, isPointerList) {
+    MetaEditorControl.prototype._deletePointerRelationship = function (sourceID, targetID, pointerName, isSet) {
         var sourceNode = this._client.getNode(sourceID),
             targetNode = this._client.getNode(targetID),
             pointerMetaDescriptor;
@@ -1250,11 +1171,10 @@ define(['logManager',
             this._client.removeValidTargetItem(sourceID,pointerName,targetID);
             pointerMetaDescriptor = this._client.getValidTargetItems(sourceID,pointerName);
             if(pointerMetaDescriptor && pointerMetaDescriptor.length === 0){
-                if (isPointerList === false) {
+                if (isSet === false) {
                     //single pointer
                     this._client.deleteMetaPointer(sourceID,pointerName);
                     this._client.delPointer(sourceID,pointerName);
-                    this._updateObjectConnectionVisualStyles(sourceID);
                 } else {
                     //pointer list
                     this._client.deleteMetaPointer(sourceID,pointerName);
@@ -1324,8 +1244,8 @@ define(['logManager',
         filterIcon = MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.INHERITANCE);
         this.diagramDesigner.addFilterItem('Inheritance', MetaRelations.META_RELATIONS.INHERITANCE, filterIcon);
 
-        filterIcon = MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.POINTERLIST);
-        this.diagramDesigner.addFilterItem('Pointerlist', MetaRelations.META_RELATIONS.POINTERLIST, filterIcon);
+        filterIcon = MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.SET);
+        this.diagramDesigner.addFilterItem('Set', MetaRelations.META_RELATIONS.SET, filterIcon);
     };
 
     MetaEditorControl.prototype._onConnectionTypeFilterCheckChanged = function (value, isChecked) {
@@ -1411,8 +1331,8 @@ define(['logManager',
             this._pointerRelationshipMultiplicityUpdate(connDesc.GMESrcId, connDesc.GMEDstId, connDesc.name, oldValue, newValue);
         } else if (connDesc.type === MetaRelations.META_RELATIONS.INHERITANCE) {
             //never can happen
-        } else if (connDesc.type === MetaRelations.META_RELATIONS.POINTERLIST) {
-            this._pointerListRelationshipMultiplicityUpdate(connDesc.GMESrcId, connDesc.GMEDstId, connDesc.name, oldValue, newValue);
+        } else if (connDesc.type === MetaRelations.META_RELATIONS.SET) {
+            this._setRelationshipMultiplicityUpdate(connDesc.GMESrcId, connDesc.GMEDstId, connDesc.name, oldValue, newValue);
         }
     };
 
@@ -1497,7 +1417,7 @@ define(['logManager',
         }
     };
 
-    MetaEditorControl.prototype._pointerListRelationshipMultiplicityUpdate = function (sourceID, targetID, pointerName, oldValue, newValue) {
+    MetaEditorControl.prototype._setRelationshipMultiplicityUpdate = function (sourceID, targetID, pointerName, oldValue, newValue) {
         var sourceNode = this._client.getNode(sourceID),
             targetNode = this._client.getNode(targetID),
             multiplicityValid,
@@ -1533,7 +1453,7 @@ define(['logManager',
                 multiplicity.id = targetID;
                 this._client.updateValidTargetItem(sourceID, pointerName, multiplicity);
             } else {
-                this._updateConnectionText(sourceID, targetID, MetaRelations.META_RELATIONS.POINTERLIST, {'name': pointerName,
+                this._updateConnectionText(sourceID, targetID, MetaRelations.META_RELATIONS.SET, {'name': pointerName,
                     'dstText': oldValue,
                     'dstTextEdit': true});
             }
@@ -1544,12 +1464,9 @@ define(['logManager',
     /****************************************************************************/
 
     MetaEditorControl.prototype._attachClientEventListeners = function () {
-        /*this._detachClientEventListeners();
-        this._client.addEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);*/
     };
 
     MetaEditorControl.prototype._detachClientEventListeners = function () {
-        //this._client.removeEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
     };
 
     MetaEditorControl.prototype.onActivate = function () {
@@ -1617,10 +1534,10 @@ define(['logManager',
             "data": { "connType": MetaRelations.META_RELATIONS.POINTER },
             "icon": MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.POINTER)});
 
-        this._radioButtonGroupMetaRelationType.addButton({ "title": "PointerList",
+        this._radioButtonGroupMetaRelationType.addButton({ "title": "Set",
             "selected": false,
-            "data": { "connType": MetaRelations.META_RELATIONS.POINTERLIST },
-            "icon": MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.POINTERLIST)});
+            "data": { "connType": MetaRelations.META_RELATIONS.SET },
+            "icon": MetaRelations.createButtonIcon(16, MetaRelations.META_RELATIONS.SET)});
 
         /************** END OF - CREATE META RELATION CONNECTION TYPES *****************/
 
@@ -1639,33 +1556,6 @@ define(['logManager',
 
 
         this._toolbarInitialized = true;
-    };
-
-    //if the object is a validConnectionType and does not have the connection style visual properties in Registry, add them
-    //if it's not and has, remove them
-    MetaEditorControl.prototype._updateObjectConnectionVisualStyles = function(objectID) {
-        var isConnectionType = GMEConcepts.isConnectionType(objectID),
-            nodeObj = this._client.getNode(objectID),
-            existingLineStyle = nodeObj.getEditableRegistry(nodePropertyNames.Registry.lineStyle),
-            resultLineStyle = {},
-            DEFAULT_LINE_STYLE = {};
-
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.WIDTH] = 1;
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.COLOR] = "#000000";
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.PATTERN] = "";
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.TYPE] = "";
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.START_ARROW] = "none";
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.END_ARROW] = "none";
-        DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.POINTS] = [];
-
-        if (isConnectionType) {
-            _.extend(resultLineStyle, DEFAULT_LINE_STYLE, existingLineStyle);
-            this._client.setRegistry(objectID, nodePropertyNames.Registry.lineStyle, resultLineStyle);
-        } else {
-            //not connection type
-            //remove registry settings
-            this._client.setRegistry(objectID, nodePropertyNames.Registry.lineStyle, {});
-        }
     };
 
     MetaEditorControl.prototype._getAssociatedConnections =  function (objectID) {
@@ -1701,6 +1591,166 @@ define(['logManager',
         checkConnections(this._connectionListByDstGMEID, result.dst);
 
         return result;
+    };
+
+    MetaEditorControl.prototype._processMetaAspectSheetsRegistry = function () {
+        var aspectNode = this._client.getNode(this.metaAspectContainerNodeID),
+            metaAspectSheetsRegistry = aspectNode.getEditableRegistry(REGISTRY_KEYS.META_SHEETS) || [],
+            i,
+            len,
+            sheetID,
+            selectedSheetID,
+            setName,
+            j,
+            gmeID;
+
+        //save old positions
+        var oldMetaAspectMembersCoordinatesPerSheet = this._metaAspectMembersCoordinatesPerSheet;
+
+        this._sheets = {};
+        this._metaAspectMembersPerSheet = {};
+        this._metaAspectMembersCoordinatesPerSheet = {};
+        this.diagramDesigner.clearTabs();
+        this._metaAspectSheetsPerMember = {};
+
+        metaAspectSheetsRegistry.sort(function (a, b) {
+            if (a.order < b.order) {
+                return -1;
+            } else {
+                return 1;
+            }
+        });
+
+        //here we have the metaAspectRegistry ordered by user defined order
+        len = metaAspectSheetsRegistry.length;
+        for (i = 0; i < len; i += 1) {
+            setName = metaAspectSheetsRegistry[i].SetID;
+
+            sheetID = this.diagramDesigner.addTab(metaAspectSheetsRegistry[i].title, true, true);
+
+            this._sheets[sheetID] = setName;
+
+            //get the most up-to-date member list for each set
+            this._metaAspectMembersPerSheet[setName] = aspectNode.getMemberIds(setName);
+
+            //TODO: debug check to see if root for any reason is present among the members list
+            //TODO: remove, not needed, just for DEGUG reasons...
+            //TODO: it should never happen because it leads to double refresh when ROOT changes
+            //TODO: when onOneEvent will be eliminated this will not be an issue anymore
+            if (this._metaAspectMembersPerSheet[setName].indexOf(CONSTANTS.PROJECT_ROOT_ID) > -1) {
+                this.logger.error('ROOT is in MetaSet: ' + setName);
+            }
+
+            //get the sheet coordinates
+            this._metaAspectMembersCoordinatesPerSheet[setName] = {};
+            j = this._metaAspectMembersPerSheet[setName].length;
+            while (j--) {
+                gmeID =  this._metaAspectMembersPerSheet[setName][j];
+                this._metaAspectMembersCoordinatesPerSheet[setName][gmeID] = aspectNode.getMemberRegistry(setName, gmeID, REGISTRY_KEYS.POSITION);
+                this._metaAspectSheetsPerMember[gmeID] = this._metaAspectSheetsPerMember[gmeID] || [];
+                this._metaAspectSheetsPerMember[gmeID].push(setName);
+            }
+
+            if (this._selectedMetaAspectSet &&
+                this._selectedMetaAspectSet === metaAspectSheetsRegistry[i].SetID) {
+                selectedSheetID = sheetID;
+            }
+        }
+
+        //figure out whose position has changed
+        var positionUpdated = [];
+        if (this._selectedMetaAspectSet) {
+            var oldPositions = oldMetaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet];
+            var newPositions = this._metaAspectMembersCoordinatesPerSheet[this._selectedMetaAspectSet];
+            if (oldPositions && newPositions) {
+                for (var oldItemId in oldPositions) {
+                    if (oldPositions.hasOwnProperty(oldItemId) && newPositions.hasOwnProperty(oldItemId)) {
+                        if (oldPositions[oldItemId].x !== newPositions[oldItemId].x ||
+                            oldPositions[oldItemId].y !== newPositions[oldItemId].y) {
+                            positionUpdated.push(oldItemId);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!selectedSheetID) {
+            for (selectedSheetID in this._sheets) {
+                if (this._sheets.hasOwnProperty(selectedSheetID)) {
+                    break;
+                }
+            }
+        }
+
+        this.diagramDesigner.selectTab(selectedSheetID);
+
+        return positionUpdated;
+    };
+
+
+    MetaEditorControl.prototype._initializeSelectedSheet = function () {
+        var len,
+            self = this;
+
+        this.logger.debug("_initializeSelectedSheet");
+
+        //delete everything from model editor
+        this.diagramDesigner.clear();
+
+        //clean up local hash map
+        this._GMENodes = [];
+
+        this._GMEID2ComponentID = {};
+        this._ComponentID2GMEID = {};
+
+        this._connectionWaitingListByDstGMEID = {};
+        this._connectionWaitingListBySrcGMEID = {};
+
+        this._connectionListBySrcGMEID = {};
+        this._connectionListByDstGMEID = {};
+        this._connectionListByType = {};
+        this._connectionListByID = {};
+
+        this._nodeMetaContainment = {};
+        this._nodeMetaPointers = {};
+        this._nodeMetaSets = {};
+        this._nodeMetaInheritance = {};
+
+        this._selectedMetaAspectSheetMembers = [];
+
+        this._filteredOutConnectionDescriptors = {};
+        len = this._filteredOutConnTypes.length;
+        while (len--) {
+            this._filteredOutConnectionDescriptors[this._filteredOutConnTypes[len]] = [];
+        }
+
+        //remove current territory patterns
+        if (this._metaAspectMembersTerritoryId) {
+            this._client.removeUI(this._metaAspectMembersTerritoryId);
+        }
+
+        this._metaAspectMemberPatterns = {};
+
+        if (this._selectedMetaAspectSet && this._metaAspectMembersPerSheet[this._selectedMetaAspectSet]) {
+            len = this._metaAspectMembersPerSheet[this._selectedMetaAspectSet].length;
+            if (len > 0) {
+                this.diagramDesigner.showProgressbar();
+            }
+            while (len--) {
+                this._selectedMetaAspectSheetMembers.push(this._metaAspectMembersPerSheet[this._selectedMetaAspectSet][len]);
+                this._metaAspectMemberPatterns[this._metaAspectMembersPerSheet[this._selectedMetaAspectSet][len]] = { "children": 0 };
+            }
+        }
+
+        this._metaAspectMembersTerritoryId = this._client.addUI(this, function (events) {
+            self._eventCallback(events);
+        });
+
+        this._client.updateTerritory(this._metaAspectMembersTerritoryId, this._metaAspectMemberPatterns);
+    };
+
+    MetaEditorControl.prototype.setReadOnly = function (isReadOnly) {
+        this._radioButtonGroupMetaRelationType.enabled(!isReadOnly);
     };
 
     //attach MetaEditorControl - DiagramDesigner event handler functions

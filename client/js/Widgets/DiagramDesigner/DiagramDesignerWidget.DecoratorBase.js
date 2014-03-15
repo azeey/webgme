@@ -1,8 +1,10 @@
 "use strict";
 
 define(['logManager',
-        './DiagramDesignerWidget.Constants'], function (logManager,
-                                                        DiagramDesignerWidgetConstants) {
+        './DiagramDesignerWidget.Constants',
+        './DiagramDesignerWidget.DecoratorBase.ConnectionArea'], function (logManager,
+                                                        DiagramDesignerWidgetConstants,
+                                                        DiagramDesignerWidgetDecoratorBaseConnectionArea) {
 
     var DiagramDesignerWidgetDecoratorBase,
         DECORATOR_ID = "DiagramDesignerWidgetDecoratorBase";
@@ -10,6 +12,7 @@ define(['logManager',
     DiagramDesignerWidgetDecoratorBase = function (params) {
 
         this.hostDesignerItem = params.host;
+        this.preferencesHelper = params.preferencesHelper;
         this.logger = params.logger || logManager.create(this.DECORATORID);
 
         this.skinParts = {};
@@ -20,6 +23,8 @@ define(['logManager',
 
         this.logger.debug("Created");
     };
+
+    _.extend(DiagramDesignerWidgetDecoratorBase.prototype, DiagramDesignerWidgetDecoratorBaseConnectionArea.prototype);
 
     DiagramDesignerWidgetDecoratorBase.prototype.DECORATORID = DECORATOR_ID;
 
@@ -51,6 +56,8 @@ define(['logManager',
 
         //extra default initializations
         this.initializeConnectors();
+
+        this._initializeConnectionAreaUserSelection();
     };
 
     //as a common default functionality, DiagramDesignerWidgetDecoratorBase provides solution for taking care of the connectors

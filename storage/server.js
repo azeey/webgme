@@ -4,7 +4,7 @@
  * Author: Tamas Kecskes
  */
 
-define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID,URL,IO){
+define([ "util/assert","util/guid","util/url","socket.io","worker/serverworkermanager" ], function(ASSERT,GUID,URL,IO,SWM){
 
     var server = function(_database,options){
         ASSERT(typeof _database === 'object');
@@ -13,23 +13,23 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
         options.secret = options.secret || 'this is WEBGME!!!';
         options.cookieID = options.cookieID || 'webgme';
         options.authorization = options.authorization || function(sessionID,projectName,type,callback){callback(null,true);};
-        options.sessioncheck = options.sessioncheck || function(sessionID,callback){callback(null,true)};
-        options.authInfo = options.authInfo || function(sessionID,projectName,callback){callback(null,{read:true,write:true,delete:true});};
+        options.sessioncheck = options.sessioncheck || function(sessionID,callback){callback(null,true);};
+        options.authInfo = options.authInfo || function(sessionID,projectName,callback){callback(null,{'read':true,'write':true,'delete':true});};
+        options.log = options.log || {
+            debug: function (msg) {
+                console.log("DEBUG - " + msg);
+            },
+            error: function (msg) {
+                console.log("ERROR - " + msg);
+            }
+        };
         var _socket = null,
             _objects = {},
             _projects = {},
             /*_references = {},*/
             _databaseOpened = false,
-            ERROR_DEAD_GUID = 'the given object does not exists';
-
-        function addClient(id,project){
-            if(!_references[project]){
-                _references[project] = [];
-            }
-            if(_references[project].indexOf(id) === -1){
-                _references[project].push(id);
-            }
-        }
+            ERROR_DEAD_GUID = 'the given object does not exists',
+            _workerManager = null;
 
         function getSessionID(socket){
             return socket.handshake.webGMESession;
@@ -43,6 +43,7 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
                 _database.openDatabase(function(err){
                     if(err){
                         _databaseOpened = false;
+                        options.log.error(err);
                         callback(err);
                     } else {
                         callback(null);
@@ -51,44 +52,6 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
             }
         }
 
-        function _checkProject(client,project,callback){
-            options.authorization(client,project,'read',function(err,cando){
-                if(!err && cando === true){
-                    if(_projects[project]){
-                        //addClient(client,project);
-                        //TODO we should find the real reason behind collection loose
-                        try{
-                         _projects[project].getBranchNames(function(err,names){
-                            if(err){
-                                delete _projects[project];
-                                checkProject(client,project,callback);
-                            } else {
-                                callback(null,_projects[project]);
-                            }
-                         });
-                        }
-                        catch(e){
-                            delete _projects[project];
-                            checkProject(client,project,callback);
-                        }
-                        callback(null,_projects[project]);
-                    } else {
-                        _database.openProject(project,function(err,proj){
-                            if(!err && proj){
-                                _projects[project] = proj;
-                                //addClient(client,project);
-                                callback(null,_projects[project]);
-                            } else {
-                                callback(err,null);
-                            }
-                        });
-                    }
-                } else {
-                    err = err || 'missing necessary user rights';
-                    callback(err);
-                }
-            });
-        }
         function checkProject(client,projectName,callback){
             options.authorization(client,projectName,'read',function(err,cando){
                 if(!err && cando === true){
@@ -104,7 +67,6 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
             options.authorization(client,project,'create',function(err,cando){
                 if(!err && cando === true){
                     if(_projects[project]){
-                        //addClient(client,project);
                         //TODO we should find the real reason behind collection loose
                         try{
                             _projects[project].getBranchNames(function(err,names){
@@ -125,7 +87,6 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
                         _database.openProject(project,function(err,proj){
                             if(!err && proj){
                                 _projects[project] = proj;
-                                //addClient(client,project);
                                 callback(null,_projects[project]);
                             } else {
                                 callback(err,null);
@@ -411,41 +372,28 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
                         }
                     });
                 });
-                /* TODO check if we really need this
-                socket.on('makeCommit',function(projectName,parents,roothash,msg,callback){
-                    checkProject(getSessionID(socket),projectName,function(err,project){
-                        if(err){
-                            callback(err);
-                        } else {
-                            project.makeCommit(parents,roothash,msg,callback);
-                        }
-                    });
-                });*/
+
+
+                //worker commands
+                socket.on('simpleRequest',function(parameters,callback){
+                    _workerManager.request(parameters,callback);
+                });
+
+                socket.on('simpleResult',function(resultId,callback){
+                    getWorkerResult(resultId,callback);
+                });
+
+                //token for REST
+                socket.on('getToken',function(callback){
+                    options.getToken(getSessionID(socket),callback);
+                });
 
                 socket.on('disconnect',function(){
-                    /*var todelete = [];
-                    for(var i in _references){
-                        if(_projects[i]){
-                            var index = _references[i].indexOf(socket.id);
-                            if(index>-1){
-                                _references[i].splice(index,1);
-                                if(_references[i].length === 0){
-                                    todelete.push(i);
-                                    var proj = _projects[i];
-                                    delete _projects[i];
-                                    proj.closeProject(null);
-                                }
-                            }
-                        } else {
-                            todelete.push(i);
-                        }
-                    }
-
-                    for(i=0;i<todelete.length;i++){
-                        delete _references[todelete[i]];
-                    }*/
+                    //TODO temporary the disconnect function has been removed
                 });
             });
+
+            _workerManager = new SWM({basedir:options.basedir,mongoip:options.host,mongoport:options.port,mongodb:options.database});
         }
 
         function close(){
@@ -476,12 +424,16 @@ define([ "util/assert","util/guid","util/url","socket.io" ],function(ASSERT,GUID
             _databaseOpened = false;
         }
 
+        function getWorkerResult(resultId,callback){
+            _workerManager.result(resultId,callback);
+        }
+
         return {
             open: open,
-            close: close
+            close: close,
+            getWorkerResult: getWorkerResult
         };
     };
 
     return server;
 });
-

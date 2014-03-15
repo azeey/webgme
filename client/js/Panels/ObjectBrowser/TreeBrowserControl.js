@@ -7,15 +7,27 @@
 
 define(['logManager',
         'js/Utils/GMEConcepts',
+        'js/NodePropertyNames',
+        'js/Utils/ExportManager',
+        'js/Utils/ImportManager',
+        'js/Constants',
         'css!/css/Panels/ObjectBrowser/TreeBrowserControl'], function (logManager,
-                                                                       GMEConcepts) {
+                                                                       GMEConcepts,
+                                                                       nodePropertyNames,
+                                                                       ExportManager,
+                                                                       ImportManager,
+                                                                       CONSTANTS) {
 
-    var NODE_PROGRESS_CLASS = 'node-progress';
+    var NODE_PROGRESS_CLASS = 'node-progress',
+        GME_MODEL_CLASS = "gme-model",
+        GME_ATOM_CLASS = "gme-atom",
+        GME_CONNECTION_CLASS = "gme-connection",
+        GME_ROOT_ICON = "gme-root",
+        projectRootID = CONSTANTS.PROJECT_ROOT_ID;
 
     var TreeBrowserControl = function (client, treeBrowser) {
 
         var logger,
-            rootNodeId = "root",
             stateLoading = 0,
             stateLoaded = 1,
             selfId,
@@ -23,37 +35,58 @@ define(['logManager',
             nodes = {}, //local container for accounting the currently opened node list, its a hashmap with a key of nodeId and a value of { DynaTreeDOMNode, childrenIds[], state }
             refresh,
             initialize,
-            self = this;
+            self = this,
+            getNodeClass;
 
         //get logger instance for this component
         logger = logManager.create("TreeBrowserControl");
 
         initialize = function () {
-            var rootNode = client.getNode('root');
+            var rootNode = client.getNode(projectRootID); //TODO make this loaded from constants
 
             if (rootNode) {
                 var loadingRootTreeNode;
 
-                selfId = client.addUI(self);
+                selfId = client.addUI(self, function (events) {
+                    self._eventCallback(events);
+                });
 
                 //add "root" with its children to territory
                 //create a new loading node for it in the tree
-                loadingRootTreeNode = treeBrowser.createNode(null, {   "id": rootNodeId,
+                loadingRootTreeNode = treeBrowser.createNode(null, {   "id": projectRootID,
                     "name": "Initializing tree...",
                     "hasChildren" : false,
                     "class" :  NODE_PROGRESS_CLASS });
 
                 //store the node's info in the local hashmap
-                nodes[rootNodeId] = {   "treeNode": loadingRootTreeNode,
+                nodes[projectRootID] = {   "treeNode": loadingRootTreeNode,
                     "children" : [],
                     "state" : stateLoading };
 
                 //add the root to the query
-                selfPatterns = { "root": { "children": 2} };
+                selfPatterns ={};
+                selfPatterns[projectRootID] = { "children": 2}; //TODO make this loaded from constants
                 client.updateTerritory(selfId, selfPatterns);
             } else {
                 setTimeout(initialize, 500);
             }
+        };
+
+        getNodeClass = function (nodeObj) {
+            var c = GME_ATOM_CLASS; //by default everyone is represented with the atom class
+
+            if (nodeObj.getId() === projectRootID) {
+                //if root object
+                c = GME_ROOT_ICON;
+            } else if (GMEConcepts.isConnectionType(nodeObj.getId())) {
+                //if it's a connection, let it have the connection icon
+                c = GME_CONNECTION_CLASS;
+            } else if (nodeObj.getChildrenIds().length > 0) {
+                //if it has children, let it have the model icon
+                c = GME_MODEL_CLASS;
+            }
+
+            return c;
         };
 
         //called from the TreeBrowserWidget when a node is expanded by its expand icon
@@ -92,7 +125,7 @@ define(['logManager',
                         childTreeNode = treeBrowser.createNode(parentNode, {   "id": currentChildId,
                             "name": childNode.getAttribute("name"),
                             "hasChildren" : (childNode.getChildrenIds()).length > 0,
-                            "class" :   ((childNode.getChildrenIds()).length > 0) ? "gme-model" : "gme-atom" });
+                            "class" :   getNodeClass(childNode) });
 
                         //store the node's info in the local hashmap
                         nodes[currentChildId] = {    "treeNode": childTreeNode,
@@ -195,19 +228,105 @@ define(['logManager',
         //called when the user double-cliked on a node in the tree
         treeBrowser.onNodeDoubleClicked = function (nodeId) {
             logger.debug("Firing onNodeDoubleClicked with nodeId: " + nodeId);
-            client.setSelectedObjectId(nodeId);
+            WebGMEGlobal.State.setActiveObject(nodeId);
         };
 
         //called from the TreeBrowserWidget when a create function is called from context menu
-        treeBrowser.onNodeCreate = function (nodeId) {
-            client.createChild({parentId: nodeId});
+        treeBrowser.onSetCreateSubMenu = function (nodeId) {
+            var result = [],
+                validChildrenTypes = GMEConcepts.getMETAAspectMergedValidChildrenTypes(nodeId), //get possible targets from MetaDescriptor
+                children = [],
+                len,
+                childObj,
+                childName,
+                childId,
+                id;
+
+            len = validChildrenTypes.length;
+            while (len--) {
+                //do not list connection types in Create...
+                id = validChildrenTypes[len];
+                if (GMEConcepts.isConnectionType(id) !== true &&
+                    GMEConcepts.canCreateChild(nodeId, id)) {
+                    childObj = client.getNode(id);
+
+                    childId = id + "";
+                    childName = childId;
+
+                    if (childObj) {
+                        childName = childObj.getAttribute(nodePropertyNames.Attributes.name);
+                    }
+
+                    children.push({'ID': childId, 'Title': childName});
+                }
+            }
+
+            children.sort(function(a,b) {
+                if (a.Title.toLowerCase() < b.Title.toLowerCase()) {
+                    return -1;
+                } else {
+                    return 1;
+                }
+            });
+
+            for (len = 0; len < children.length; len += 1) {
+                result.push({id: children[len].ID,
+                             title: children[len].Title});
+            }
+
+            return result;
+        };
+
+        treeBrowser.onExtendMenuItems = function (nodeId, menuItems) {
+            menuItems["exportNode"] = { // Export...
+                "name": "Export object...",
+                "callback": function(/*key, options*/) {
+                    ExportManager.export(nodeId);
+                },
+                "icon": false
+            };
+
+            menuItems["importNode"] = { // Import...
+                "name": "Import here...",
+                "callback": function(/*key, options*/) {
+                    ImportManager.import(nodeId, undefined, false);
+                },
+                "icon": false
+            };
+
+            menuItems["mergeNode"] = { // Merge...
+                "name": "Merge here...",
+                "callback": function(/*key, options*/) {
+                    ImportManager.import(nodeId, undefined, true);
+                },
+                "icon": false
+            };
+
+            menuItems["exportContext"] = { //Export context for plugin
+                "name": "Export context...",
+                "callback": function(/*key, options*/){
+                    ExportManager.exIntConf([nodeId]);
+                },
+                "icon": false
+            };
+        };
+
+        //called from the TreeBrowserWidget when a create function is called from context menu
+        treeBrowser.onNodeCreate = function (nodeId, childId) {
+            if (GMEConcepts.canCreateChild(nodeId, childId)) {
+                var params = { "parentId": nodeId };
+                params[childId] = {registry:{position:{x: 100, y: 100}}};
+                client.createChildren(params);
+            } else {
+                logger.warning("Can not create child instance of '" + childId + "', in parent object: '" + nodeId + "'");
+            }
         };
 
 
         treeBrowser.getDragEffects = function (el) {
             return [treeBrowser.DRAG_EFFECTS.DRAG_COPY,
                 treeBrowser.DRAG_EFFECTS.DRAG_MOVE,
-                treeBrowser.DRAG_EFFECTS.DRAG_CREATE_REFERENCE,
+                treeBrowser.DRAG_EFFECTS.DRAG_CREATE_POINTER,
                 treeBrowser.DRAG_EFFECTS.DRAG_CREATE_INSTANCE];
         };
 
@@ -245,10 +364,6 @@ define(['logManager',
                         eventType = "update";
                     }
                 }
-
-                if (DEBUG === "DEMOHACK" && objectId === 'root') {
-                    client.setSelectedObjectId(objectId);
-                }
             }
             //ENDOF : HANDLE INSERT
 
@@ -271,12 +386,7 @@ define(['logManager',
                             //render it's real data
 
                             //specify the icon for the treenode
-                            //TODO: fixme (determine the type based on the 'kind' of the object)
-                            objType = ((updatedObject.getChildrenIds()).length > 0) ? "gme-model" : "gme-atom";
-                            //for root node let's specify specific type
-                            if (objectId === rootNodeId) {
-                                objType = "gme-root";
-                            }
+                            objType = getNodeClass(updatedObject);
 
                             //create the node's descriptor for the tree-browser widget
                             nodeDescriptor = {  "text" :  updatedObject.getAttribute("name"),
@@ -295,12 +405,7 @@ define(['logManager',
                             //object is already loaded here, let's see what changed in it
 
                             //specify the icon for the treenode
-                            //TODO: fixme (determine the type based on the 'kind' of the object)
-                            objType = ((updatedObject.getChildrenIds()).length > 0) ? "gme-model" : "gme-atom";
-                            //for root node let's specify specific type
-                            if (objectId === rootNodeId) {
-                                objType = "gme-root";
-                            }
+                            objType = getNodeClass(updatedObject);
 
                             //create the node's descriptor for the treebrowser widget
                             nodeDescriptor = {
@@ -376,7 +481,7 @@ define(['logManager',
                                         childTreeNode = treeBrowser.createNode(nodes[objectId].treeNode, {  "id": currentChildId,
                                             "name": childNode.getAttribute("name"),
                                             "hasChildren": (childNode.getChildrenIds()).length > 0,
-                                            "class" :  ((childNode.getChildrenIds()).length > 0) ? "gme-model" : "gme-atom" });
+                                            "class" :  getNodeClass(childNode) });
 
                                         //store the node's info in the local hashmap
                                         nodes[currentChildId] = {   "treeNode": childTreeNode,
@@ -405,7 +510,7 @@ define(['logManager',
                             nodes[objectId].state = stateLoaded;
 
                             //if there is no more children of the current node, remove it from the territory
-                            if ((updatedObject.getChildrenIds()).length === 0 && objectId !== "root") {
+                            if ((updatedObject.getChildrenIds()).length === 0 && objectId !== projectRootID) {
                                 removeFromTerritory.push({ "nodeid" : objectId });
                                 delete selfPatterns[objectId];
                             }
@@ -421,23 +526,28 @@ define(['logManager',
             //ENDOF : HANDLE UPDATE
         };
 
-        this.onEvent = function (etype, eid) {
-            switch (etype) {
-            case "load":
-                refresh("insert", eid);
-                break;
-            case "update":
-                refresh("update", eid);
-                break;
-            /*case "create":
-                refresh("insert", eid);
-                break;
-            case "delete":
-                refresh("update", eid);
-                break;*/
-            case "unload":
-                refresh("unload", eid);
-                break;
+        this._eventCallback = function (events) {
+            var i,
+                len = events.length;
+
+            for (i = 0; i < len; i += 1) {
+                switch (events[i].etype) {
+                    case "load":
+                        refresh("insert", events[i].eid);
+                        break;
+                    case "update":
+                        refresh("update", events[i].eid);
+                        break;
+                    /*case "create":
+                     refresh("insert", events[i].eid);
+                     break;
+                     case "delete":
+                     refresh("update", events[i].eid);
+                     break;*/
+                    case "unload":
+                        refresh("unload", events[i].eid);
+                        break;
+                }
             }
         };
 
@@ -447,7 +557,7 @@ define(['logManager',
             //forget the old territory
             client.removeUI(selfId);
 
-            treeBrowser.deleteNode(nodes[rootNodeId].treeNode);
+            treeBrowser.deleteNode(nodes[projectRootID].treeNode);
 
             selfPatterns = {};
             nodes = {};

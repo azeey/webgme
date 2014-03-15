@@ -16,8 +16,13 @@ define(['./ToolbarItemBase'], function (ToolbarItemBase) {
 
     _.extend(ToolbarLabel.prototype, ToolbarItemBase.prototype);
 
-    ToolbarLabel.prototype.text = function (text) {
-        this.el.text(text);
+    ToolbarLabel.prototype.text = function (text, noToolbarRefresh) {
+        if (this.el) {
+            this.el.text(text);
+            if (noToolbarRefresh !== true) {
+                this._toolbar.refresh();
+            }
+        }
     };
 
     return ToolbarLabel;

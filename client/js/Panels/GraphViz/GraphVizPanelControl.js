@@ -30,10 +30,6 @@ define(['logManager',
 
         this._initWidgetEventHandlers();
 
-        this._selectedObjectChanged = function (__project, nodeId) {
-            self.selectedObjectChanged(nodeId);
-        };
-
         this._logger.debug("Created");
     };
 
@@ -42,7 +38,7 @@ define(['logManager',
 
         this._graphVizWidget.onBackgroundDblClick = function () {
             if (self._currentNodeParentId) {
-                self._client.setSelectedObjectId(self._currentNodeParentId);
+                WebGMEGlobal.State.setActiveObject(self._currentNodeParentId);
             }
         };
 
@@ -52,7 +48,7 @@ define(['logManager',
         };
 
         this._graphVizWidget.onNodeDblClick = function (id) {
-            self._client.setSelectedObjectId(id);
+            WebGMEGlobal.State.setActiveObject(id);
         };
 
         this._graphVizWidget.onNodeClose = function (id) {
@@ -90,7 +86,7 @@ define(['logManager',
         var desc = this._getObjectDescriptor(nodeId),
             self = this;
 
-        this._logger.debug("SELECTEDOBJECT_CHANGED nodeId '" + nodeId + "'");
+        this._logger.debug("activeObject nodeId '" + nodeId + "'");
 
         //remove current territory patterns
         if (this._currentNodeId) {
@@ -102,14 +98,14 @@ define(['logManager',
 
         this._nodes = {};
 
-        if (this._currentNodeId) {
+        if (this._currentNodeId || this._currentNodeId === CONSTANTS.PROJECT_ROOT_ID) {
             //put new node's info into territory rules
             this._selfPatterns = {};
             this._selfPatterns[nodeId] = { "children": 0 };
 
             this._graphVizWidget.setTitle(desc.name.toUpperCase());
 
-            if (desc.parentId) {
+            if (desc.parentId || desc.parentId === CONSTANTS.PROJECT_ROOT_ID) {
                 this.$btnModelHierarchyUp.show();
             } else {
                 this.$btnModelHierarchyUp.hide();
@@ -117,7 +113,9 @@ define(['logManager',
 
             this._currentNodeParentId = desc.parentId;
 
-            this._territoryId = this._client.addUI(this, true);
+            this._territoryId = this._client.addUI(this, function (events) {
+                self._eventCallback(events);
+            });
             //update the territory
             this._client.updateTerritory(this._territoryId, this._selfPatterns);
 
@@ -150,11 +148,11 @@ define(['logManager',
         return objDescriptor;
     };
 
-    GraphVizControl.prototype.onOneEvent = function (events) {
+    GraphVizControl.prototype._eventCallback = function (events) {
         var i = events ? events.length : 0,
             e;
 
-        this._logger.debug("onOneEvent '" + i + "' items");
+        this._logger.debug("_eventCallback '" + i + "' items");
 
         while (i--) {
             e = events[i];
@@ -173,13 +171,13 @@ define(['logManager',
 
         this._generateData();
 
-        this._logger.debug("onOneEvent '" + events.length + "' items - DONE");
+        this._logger.debug("_eventCallback '" + events.length + "' items - DONE");
     };
 
     GraphVizControl.prototype._generateData = function () {
         var self = this;
 
-        var data = _.extend({}, this._currentNodeId ? this._nodes[this._currentNodeId] : {});
+        var data = _.extend({}, (this._currentNodeId || this._currentNodeId === CONSTANTS.PROJECT_ROOT_ID )? this._nodes[this._currentNodeId] : {});
 
         var loadRecursive = function (node) {
             var len = (node && node.childrenIDs) ? node.childrenIDs.length : 0;
@@ -216,13 +214,17 @@ define(['logManager',
         this._detachClientEventListeners();
     };
 
+    GraphVizControl.prototype._stateActiveObjectChanged = function (model, activeObjectId) {
+        this.selectedObjectChanged(activeObjectId);
+    };
+
     GraphVizControl.prototype._attachClientEventListeners = function () {
         this._detachClientEventListeners();
-        this._client.addEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged, this);
     };
 
     GraphVizControl.prototype._detachClientEventListeners = function () {
-        this._client.removeEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.off('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged);
     };
 
     GraphVizControl.prototype.onActivate = function () {
@@ -274,7 +276,7 @@ define(['logManager',
             "title": "Go to parent",
             "icon": "icon-circle-arrow-up",
             "clickFn": function (/*data*/) {
-                self._client.setSelectedObjectId(self._currentNodeParentId);
+                WebGMEGlobal.State.setActiveObject(self._currentNodeParentId);
             }
         });
         this._toolbarItems.push(this.$btnModelHierarchyUp);

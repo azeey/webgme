@@ -22,26 +22,16 @@ define([], function () {
         /*
          * DEDICATED GME OBJECT IDs
          */
-        PROJECT_ROOT_ID: 'root',
+        PROJECT_ROOT_ID: '',
         PROJECT_FCO_ID: 'FCO_ID',
+        PROJECT_FCO_GUID: 'cd891e7b-e2ea-e929-f6cd-9faf4f1fc045',
+        PROJECT_FCO_RELID: '1',
 
         /*
          * Dedicated POINTER names
          */
          POINTER_SOURCE : 'src',     //dedicated connection source pointer name
          POINTER_TARGET : 'dst',     //dedicated connection target pointer name
-         POINTER_REF: 'ref',    //dedicated reference pointer name
-         POINTER_BASE: 'base',  //dedicated inheritance pointer name
-
-        DISPLAY_FORMAT_ATTRIBUTE_MARKER: '$',
-
-         /*
-          * Dedicated SET names
-          */
-         SET_VALIDCHILDREN : 'ValidChildren',
-         SET_VALIDSOURCE : 'ValidSource',
-         SET_VALIDDESTINATION : 'ValidDestination',
-         SET_VALIDINHERITOR : 'ValidInheritor',
-         SET_GENERAL : 'General'
+         POINTER_BASE: 'base'  //dedicated inheritance pointer name
     };
 });

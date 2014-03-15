@@ -1,17 +1,23 @@
 "use strict";
 
 define(['logManager',
-        'js/Widgets/DiagramDesigner/DiagramDesignerWidget.Constants'], function (logManager,
-                                                                                 DiagramDesignerWidgetConstants) {
+        'js/Widgets/DiagramDesigner/DiagramDesignerWidget.Constants',
+        'js/Constants'], function (logManager,
+                                     DiagramDesignerWidgetConstants,
+                                     CONSTANTS) {
 
     var Port,
         PORT_CONNECTOR_LEN = 20,
-        PORT_DOM_HEIGHT = 16;
+        PORT_DOM_HEIGHT = 15,
+        PORT_TITLE_WRAPPER_WITH_ICON_CLASS = 'w-icon',
+        PORT_DOT_WIDTH = 3,
+        PORT_ICON_WIDTH = 5;   //_Port.scss: $svg-icon-width: 5px;
 
     Port = function (id, options) {
         this.id = id;
 
         this.title = options.title || "";
+        this.icon = options.svg || "";
         this.orientation = undefined;
         this.position = {};
         this.skinParts = [];
@@ -35,10 +41,11 @@ define(['logManager',
     Port.prototype._DOMTitleWrapper = $('<div class="title-wrapper"><span class="title">__NAME__</span></div>');
     Port.prototype._DOMDot = $('<span class="dot"></span>');
     Port.prototype._DOMConnector = $('<div class="connector"></div>');
+    Port.prototype._DOMSVGIcon = $('<img class="svg-icon"/>');
 
-    Port.prototype._DOMBaseLeftTemplate = Port.prototype._DOMPortBase.clone().append(Port.prototype._DOMDot.clone()).append(Port.prototype._DOMConnector.clone()).append(Port.prototype._DOMTitleWrapper.clone());
+    Port.prototype._DOMBaseLeftTemplate = Port.prototype._DOMPortBase.clone().append(Port.prototype._DOMDot.clone()).append(Port.prototype._DOMConnector.clone()).append(Port.prototype._DOMSVGIcon.clone()).append(Port.prototype._DOMTitleWrapper.clone());
 
-    Port.prototype._DOMBaseRightTemplate = Port.prototype._DOMPortBase.clone().append(Port.prototype._DOMTitleWrapper.clone()).append(Port.prototype._DOMDot.clone()).append(Port.prototype._DOMConnector.clone());
+    Port.prototype._DOMBaseRightTemplate = Port.prototype._DOMPortBase.clone().append(Port.prototype._DOMTitleWrapper.clone()).append(Port.prototype._DOMSVGIcon.clone()).append(Port.prototype._DOMDot.clone()).append(Port.prototype._DOMConnector.clone());
 
     Port.prototype._initialize = function () {
         var concretePortTemplate = this.orientation === "W" ? this._DOMBaseLeftTemplate : this._DOMBaseRightTemplate;
@@ -49,7 +56,12 @@ define(['logManager',
                       "title": this.title});
 
         this.$portTitle = this.$el.find(".title");
-        this.$portTitle.text(this.title);
+        this._updateTitle();
+
+        this.$portTitleWrapper = this.$el.find('.title-wrapper');
+
+        this.$portIcon = this.$el.find('.svg-icon');
+        this._updateIcon();
 
         this.$connectors = this.$el.find('.' + DiagramDesignerWidgetConstants.CONNECTOR_CLASS);
 
@@ -66,12 +78,25 @@ define(['logManager',
     };
 
     Port.prototype.update = function (options) {
-        if (options.title) {
-            if (this.title !== options.title) {
-                this.title = options.title;
-                this.$portTitle.text(this.title);
-                this.$el.attr({"title": this.title});
-            }
+        this.title = options.title || "";
+        this.icon = options.svg || "";
+        this._updateTitle();
+        this._updateIcon();
+    };
+
+    Port.prototype._updateTitle = function () {
+        this.$portTitle.text(this.title);
+        this.$el.attr({"title": this.title});
+    };
+
+    Port.prototype._updateIcon = function () {
+        if (this.icon) {
+            this.$portIcon.attr('src', CONSTANTS.ASSETS_DECORATOR_SVG_FOLDER + this.icon);
+            this.$portIcon.show();
+            this.$el.addClass(PORT_TITLE_WRAPPER_WITH_ICON_CLASS);
+        } else {
+            this.$portIcon.hide();
+            this.$el.removeClass(PORT_TITLE_WRAPPER_WITH_ICON_CLASS);
         }
     };
 
@@ -151,9 +176,15 @@ define(['logManager',
         }
 
         this.connectionArea.x1 = this.orientation === "W" ? 0 : this.decorator.hostDesignerItem.getWidth();
+        //fix the x coordinate for the dot/svg icon's width
+        if (this.icon) {
+            this.connectionArea.x1 += (this.orientation === "W" ? -1 : 1) * (PORT_ICON_WIDTH - 1);
+        } else {
+            this.connectionArea.x1 += (this.orientation === "W" ? -1 : 1) * (PORT_DOT_WIDTH - 1);
+        }
         this.connectionArea.x2 = this.connectionArea.x1;
-        this.connectionArea.y1 = i * PORT_DOM_HEIGHT + 6;
-        this.connectionArea.y2 = this.connectionArea.y1 + 7;
+        this.connectionArea.y1 = i * PORT_DOM_HEIGHT + 9;
+        this.connectionArea.y2 = this.connectionArea.y1;
         this.connectionArea.angle1 = this.orientation === "W" ? 180 : 0;
         this.connectionArea.angle2 = this.orientation === "W" ? 180 : 0;
 

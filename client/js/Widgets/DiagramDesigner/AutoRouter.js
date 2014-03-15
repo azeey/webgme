@@ -74,11 +74,10 @@ define(['logManager'], function (logManager) {
     var _logger = logManager.create("AutoRouter");
 
     AutoRouter = function(graphDetails){
-       this.boxes = [];
-       this.bufferBoxes = []; //Used for covering general off-limits areas in original path finding
-       this.ports = [];
-       this.paths = [];
+       this.paths = {};
+       this.pCount = 0;//A not decrementing count of paths for unique path id's
        this.boxId2Path = {};
+       this.portCount = 0;//A not decrementing count of ports for unique path id's
 
        ED_MAXCOORD = (graphDetails && graphDetails.coordMax !== undefined ? graphDetails.coordMax : false) || ED_MAXCOORD;
        ED_MINCOORD = (graphDetails && graphDetails.coordMin !== undefined ? graphDetails.coordMin : false) || ED_MINCOORD;
@@ -86,6 +85,75 @@ define(['logManager'], function (logManager) {
        EDLS_D = ED_MAXCOORD - ED_MINCOORD,
  
        this.router = new AutoRouterGraph();
+    };
+
+    var getOptimalPorts = function(ports, tgt){
+        //I will get the dx, dy that to the src/dst target and then I will calculate
+        // a priority value that will rate the ports as candidates for the 
+        //given path
+        var srcC = new ArPoint(), //src center
+            tgt, //src target
+            vector,
+            port, //result
+            maxP = -1,
+            maxArea = 0,
+            i; 
+
+        //Get the center points of the src,dst ports
+        for(i = 0; i < ports.length; i++){
+            var sPoint = ports[i].getRect().getCenter();
+            srcC.x += sPoint.x;
+            srcC.y += sPoint.y;
+
+            //adjust maxArea
+            if(maxArea < ports[i].getTotalAvailableArea())
+                maxArea = ports[i].getTotalAvailableArea();
+
+        }
+
+        //Get the average center point of src
+        srcC.x = srcC.x/ports.length;
+        srcC.y = srcC.y/ports.length;
+
+        //Get the directions
+        vector = (tgt.minus(srcC).getArray());
+
+        //Create priority function
+        function createPriority(port, center){
+            var priority = 0,
+                //point = [  center.x - port.getRect().getCenter().x, center.y - port.getRect().getCenter().y],
+                point = [ port.getRect().getCenter().x - center.x, port.getRect().getCenter().y - center.y],
+                lineCount = (port.getPointCount() || 1),
+                density = (port.getTotalAvailableArea()/lineCount)/maxArea || 1, //If there is a problem with maxArea, just ignore density
+                major = Math.abs(vector[0]) > Math.abs(vector[1]) ? 0 : 1,
+                minor = (major+1)%2;
+
+            if(point[major] > 0 === vector[major] > 0 //If they have the same parity, assign the priority to maximize that is > 1
+                    && (point[major] === 0) === (vector[major] === 0))//handling the === 0 error
+                priority = (Math.abs(vector[major])/Math.abs(vector[major] - point[major])) * 25 ; 
+
+            if(point[minor] > 0 === vector[minor] > 0//If they have the same parity, assign the priority to maximize that is < 1
+                    && (point[minor] === 0) === (vector[minor] === 0))//handling the === 0 error
+                priority += vector[minor] !== point[minor] ? (Math.abs(vector[minor])/Math.abs(vector[minor] - point[minor]))*1 : 0; 
+
+            //Adjust priority based on the density of the lines...
+            priority *= density;
+
+            return priority;
+        }
+
+        //Create priority values for each port.
+        for(i = 0; i < ports.length; i++){
+            var priority = createPriority(ports[i], srcC);
+            if( priority >= maxP ){
+                port = ports[i];
+                maxP = priority;
+            }
+        }
+
+        assert(port.getOwner(), "ARGraph.getOptimalPorts: port have invalid owner");
+
+        return port;
     };
 
     var CustomPathData = function (_x, _y){
@@ -369,6 +437,16 @@ define(['logManager'], function (logManager) {
             return Math.max(Math.abs(p.x - x), Math.max(y1 - p.y, p.y - y2));
         };
 
+        var distanceFromLine = function (pt, start, end){
+            var dir = getDir(end.minus(start));
+
+            if(isHorizontal(dir)){
+                return distanceFromVLine(pt, start.y, end.y, start.x);
+            }else{
+                return distanceFromHLine(pt, start.x, end.x, start.y);
+            }
+        };
+
         var distanceSquareFromLine = function (start, end, pt){
             //     |det(end-start start-pt)|
             // d = -------------------------
@@ -380,37 +458,18 @@ define(['logManager'], function (logManager) {
             return d_square;
         };
 
-        var isOnEdge = function (start, end, pt, nearness){
+        var isOnEdge = function (start, end, pt){
             if (start.x === end.x)			// vertical edge, horizontal move
             {
-                if (Math.abs(end.x - pt.x) <= nearness && pt.y <= Math.max(end.y, start.y) + nearness && pt.y >= Math.min(end.y, start.y) - nearness)
+                if (end.x === pt.x && pt.y <= Math.max(end.y, start.y) && pt.y >= Math.min(end.y, start.y))
                     return true;
             }
             else if (start.y === end.y)	// horizontal line, vertical move
             {
-                if (Math.abs(end.y - pt.y) <= nearness && pt.x <= Math.max(end.x, start.x) + nearness && pt.x >= Math.min(end.x, start.x) - nearness)
+                if (start.y === pt.y && pt.x <= Math.max(end.x, start.x) && pt.x >= Math.min(end.x, start.x))
                     return true;
             }
-            else
-            {
-                // TODO: consider non-linear edges
-                //
-                // Is the point close to the edge?
-                var d_square = DistanceSquareFromLine(start, end, pt);
-                if (d_square <= nearness * nearness) {
-                    // Check not just if the point is on the line, but if it is on the line segment
-                    // point = m * start + (1 - m) * end
-                    //
-                    // m = (pt + end) / (start + end)
-                    // 0.0 <= m <= 1.0
 
-                    var m1 = (pt.x - end.x) / (start.x - end.x),
-                        m2 = (pt.y - end.y) / (start.y - end.y);
-                    //assert(Math.abs(m2 - m1) < 2.0e-1);
-                    if (m1 >= 0.0 && m1 <= 1.0 && m2 >= 0.0 && m2 <= 1.0)
-                        return true;
-                }
-            }
             return false;
         };
 
@@ -498,10 +557,46 @@ define(['logManager'], function (logManager) {
             if( rect.ptInRect(start) || rect.ptInRect(end) )
                 return true;
 
-            return isLineMeetHLine(start, end, rect.left, rect.right - 1, rect.ceil) ||
-                   isLineMeetHLine(start, end, rect.left, rect.right - 1, rect.floor - 1) ||
-                   isLineMeetVLine(start, end, rect.ceil, rect.floor - 1, rect.left) ||
-                   isLineMeetVLine(start, end, rect.ceil, rect.floor - 1, rect.right - 1);
+            return isLineMeetHLine(start, end, rect.left, rect.right, rect.ceil) ||
+                   isLineMeetHLine(start, end, rect.left, rect.right, rect.floor) ||
+                   isLineMeetVLine(start, end, rect.ceil, rect.floor, rect.left) ||
+                   isLineMeetVLine(start, end, rect.ceil, rect.floor, rect.right);
+        };
+
+        var getLineClipRectIntersect = function(start, end, rect){
+            //return the endpoints of the intersection line
+            var dir = getDir(end.minus(start)),
+                endpoints = [ new ArPoint(start), new ArPoint(end) ];
+
+            if(!isLineClipRect(start, end, rect))
+                return null;
+
+            assert(isRightAngle(dir), "ArHelper.getLineClipRectIntersect: isRightAngle(dir) FAILED");
+
+            //Make sure we are working left to right or top down
+            if(dir === Dir_Left || dir === Dir_Top){
+                dir = reverseDir(dir);
+                endpoints.push(endpoints.splice(0,1)[0]); //Swap point 0 and point 1
+            }
+
+            if(isPointInDirFrom(endpoints[0], rect.getTopLeft(), reverseDir(dir))){
+                endpoints[0].assign( rect.getTopLeft() );
+            }
+
+            if(isPointInDirFrom(endpoints[1], rect.getBottomRight(), dir)){
+                endpoints[1].assign( rect.getBottomRight() );
+            }
+
+            if(isHorizontal(dir)){
+                endpoints[0].y = start.y;
+                endpoints[1].y = end.y;
+            }else{
+                endpoints[0].x = start.x;
+                endpoints[1].x = end.x;
+            }
+
+            return endpoints;
+
         };
 
         var intersect = function (a1, a2, b1, b2){
@@ -558,28 +653,26 @@ define(['logManager'], function (logManager) {
 
         var stepOneInDir = function (point, dir){
             assert( isRightAngle(dir), "ArHelper.stepOnInDir: isRightAngle(dir) FAILED");
-            var p = new ArPoint(point);
 
             switch(dir)
             {
             case Dir_Top:
-                p.y--;
+                point.y--;
                 break;
 
             case Dir_Right:
-                p.x++;
+                point.x++;
                 break;
 
             case Dir_Bottom:
-                p.y++;
+                point.y++;
                 break;
 
             case Dir_Left:
-                p.x--;
+                point.x--;
                 break;
             }
 
-            return p;
         };
 
         var getRectCoord = function (rect, dir){
@@ -626,14 +719,12 @@ define(['logManager'], function (logManager) {
             return { "box": box , "coord": res };
         };
 
-        var getRectOuterCoord = function (rect, dir, len){
+        var getRectOuterCoord = function (rect, dir){
             assert( isRightAngle(dir), "ArHelper.getRectOuterCoord: isRightAngle(dir) FAILED" );
-            assert( rect instanceof ArRect, "ArHelper.getRectOuterCoord: rect instanceof ArRect FAILED. 'rect' is " + rect);
-            var d = len ? len + 1 : 1,//BUFFER + 1, //How far to exit the box
-                t = rect.ceil - d,
-                r = rect.right + d - 1,
-                b = rect.floor + d - 1,
-                l = rect.left - d;
+            var t = rect.ceil - 1,
+                r = rect.right + 1,
+                b = rect.floor + 1,
+                l = rect.left - 1;
 
             switch( dir )
             {
@@ -1014,16 +1105,16 @@ define(['logManager'], function (logManager) {
         // cannot be in a corner of the rectangle.
         // NOTE: the right and floor used to be - 1. 
         var onWhichEdge = function (rect, point){
-            if( point.y === rect.ceil && rect.left < point.x && point.x < rect.right - 1 ) 
+            if( point.y === rect.ceil && rect.left < point.x && point.x < rect.right ) 
                 return Dir_Top;
 
-            if( point.y === rect.floor - 1 && rect.left < point.x && point.x < rect.right - 1 )
+            if( point.y === rect.floor && rect.left < point.x && point.x < rect.right )
                 return Dir_Bottom;
 
-            if( point.x === rect.left && rect.ceil < point.y && point.y < rect.floor - 1 )
+            if( point.x === rect.left && rect.ceil < point.y && point.y < rect.floor )
                 return Dir_Left;
 
-            if( point.x === rect.right - 1 && rect.ceil < point.y && point.y < rect.floor - 1 )
+            if( point.x === rect.right && rect.ceil < point.y && point.y < rect.floor )
                 return Dir_Right;
 
             return Dir_None;
@@ -1201,60 +1292,55 @@ if(DEBUG && ArPointList.length > 0){
 
            this.getHeadEdgePtrs = function(start, end){
                 if( ArPointList.length < 2 )
-                    return ArPointList.length;
+                    return { 'pos': ArPointList.length };
 
-                var pos = 0;
+                var start,
+                    end,
+                    pos = 0;
                 assert( pos < ArPointList.length, "ArPointListPath.getHeadEdgePtrs: pos < ArPointList.length FAILED");
 
-                start.assign(ArPointList[pos++]); //&
+                start = ArPointList[pos++];
                 assert( pos < ArPointList.length, "ArPointListPath.getHeadEdgePtrs: pos < ArPointList.length FAILED");
 
-                end.assign(ArPointList[pos]); //&
+                end = ArPointList[pos]; 
 
-                return pos;
+                return { 'pos': pos, 'start': start, 'end': end };
             };
 
-           this.getTailEdgePtrs = function(start, end){
-                var result = {};
-
-                if( ArPointList.length < 2 ){
-                    result.pos = ArPointList.length;
-                    return result;
-                }
-
+           this.getTailEdgePtrs = function(){
                 var pos = ArPointList.length,
                     start,
                     end;
+
+                if( ArPointList.length < 2 ){
+                    return { 'pos': pos };
+                }
+
                 assert( --pos < ArPointList.length, "ArPointListPath.getTailEdgePtrs: --pos < ArPointList.length FAILED"); 
 
-                end = ArPointList[pos--];//&
+                end = ArPointList[pos--];
                 assert( pos < ArPointList.length, "ArPointListPath.getTailEdgePtrs: pos < ArPointList.length FAILED"); 
 
-                start = ArPointList[pos];//&
+                start = ArPointList[pos];
 
-                result.pos = pos;
-                result.start = start;
-                result.end = end;
-                return result;
+                return { 'pos': pos, 'start': start, 'end': end };
             };
 
            this.getNextEdgePtrs = function(pos, start, end){
-               var result = {};
                 if(DEBUG)
                     AssertValidPos(pos);
 
-                start.assign(ArPointList[pos++]);
+                start = ArPointList[pos++];
                 if (pos < ArPointList.length)
-                    end.assign(ArPointList[pos]);
+                    end = ArPointList[pos];
 
-                result.pos = pos;
-                result.start = start;
-                result.end = end;
-                return result;
+                return { 'pos': pos, 'start': start, 'end': end };
             };
 
-           this.getPrevEdgePtrs = function(pos, start, end){
-                var result = {};
+           this.getPrevEdgePtrs = function(pos){
+                var result = {},
+                    start,
+                    end;
 
                 if(DEBUG)
                     AssertValidPos(pos);
@@ -1342,11 +1428,11 @@ if(DEBUG && ArPointList.length > 0){
                 return pos;
             };
 
-           this.getEdgePosForStartPoint = function(startpoint){
+           this.getEdgePosForStartPoint = function(start){
                 var pos = 0;
                 while( pos < ArPointList.length )
                 {
-                    if( ArPointList[pos++] === startpoint )
+                    if( ArPointList[pos++] === start)
                     {
                         assert( pos < ArPointList.length, "ArPointListPath.getEdgePosForStartPoint: pos < ArPointList.length FAILED" );
                         pos--;
@@ -1569,6 +1655,7 @@ if(DEBUG && ArPointList.length > 0){
             this.union = union;
             this.intersectAssign = intersectAssign;
             this.intersect = intersect;
+            this.touching = touching;
 
             this.getCenter = function(){
                 return { 'x': (this.left + this.right)/2, 'y': (this.ceil + this.floor)/2 };
@@ -1620,9 +1707,9 @@ if(DEBUG && ArPointList.length > 0){
                     pt = pt[0];
 
                 if( pt.x >= this.left &&
-                    pt.x < this.right &&
+                    pt.x <= this.right &&
                     pt.y >= this.ceil &&
-                    pt.y < this.floor)
+                    pt.y <= this.floor)
                     return true;
 
                 return false;
@@ -1818,6 +1905,12 @@ if(DEBUG && ArPointList.length > 0){
                 return resRect;
             }
 
+            function touching(rect){
+                //One pixel is added to the minimums so, if they are not deemed to be touching
+                //there is guaranteed to be at lease a one pixel path between them
+                return Math.max(rect.left, this.left) <= Math.min(rect.right, this.right) + 1
+                && Math.max(rect.ceil, this.ceil) <= Math.min(rect.floor, this.floor) + 1;
+            }
         };
 
         var ArSize = function (x, y){
@@ -1833,32 +1926,24 @@ if(DEBUG && ArPointList.length > 0){
             this.cx = x;
             this.cy = y;
 
-            //functions
-            this.equals = equals;
-            this.add = add;
-            this.subtract = subtract;
-            this.plus = plus;
-            this.minus = minus;
-            this.assign = assign;
-
-            function equals(otherSize){
+            this.equals = function(otherSize){
                 if( this.cx === otherSize.cx && this.cy === otherSize.cy)
                     return true;
 
                 return false;
             }
 
-            function add(otherSize){ //equivalent to +=
+            this.add = function(otherSize){ //equivalent to +=
                 this.cx += otherSize.cx;
                 this.cy += otherSize.cy;
             }
 
-            function subtract(otherSize){
+            this.subtract = function(otherSize){
                 this.cx -= otherSize.cx;
                 this.cy -= otherSize.cy;
             }
 
-            function plus(otherObject){ //equivalent to +
+            this.plus = function(otherObject){ //equivalent to +
                 var objectCopy = undefined;
 
                 if(otherObject instanceof ArSize){
@@ -1879,7 +1964,7 @@ if(DEBUG && ArPointList.length > 0){
                 return objectCopy;
             }
 
-            function minus(otherObject){ //equivalent to +
+            this.minus = function(otherObject){ //equivalent to -
                 var objectCopy = undefined;
 
                 if(otherObject instanceof ArSize){
@@ -1900,9 +1985,16 @@ if(DEBUG && ArPointList.length > 0){
                 return objectCopy;
             }
 
-            function assign(otherSize){
+            this.assign = function(otherSize){
                 this.cx = otherSize.cx;
                 this.cy = otherSize.cy;
+            }
+
+            this.getArray = function(){
+                var res = [];
+                res.push(this.cx);
+                res.push(this.cy);
+                return res;
             }
         };
 
@@ -1917,6 +2009,8 @@ if(DEBUG && ArPointList.length > 0){
                 atomic = false,
                 selfPoints = [],
                 ports = [],
+                childBoxes = [],//dependent boxes
+                mother = null,
                 id;
 
             //functions
@@ -1942,7 +2036,20 @@ if(DEBUG && ArPointList.length > 0){
             this.isBoxClip = isBoxClip;
             this.isBoxIn = isBoxIn;
             this.destroy = destroy;
+
+            //Ports
             this.deleteAllPorts = deleteAllPorts;
+            this.resetPortAvailability = resetPortAvailability;
+            this.adjustPortAvailability = adjustPortAvailability;
+
+            //Child Boxes
+            this.setParent = setParent;
+            this.getParent = getParent;
+            this.addChild = addChild;
+            this.removeChild = removeChild;
+            this.clearChildren = clearChildren;
+            this.getChildren = getChildren;
+
 
             calculateSelfPoints(); //Part of initialization
 
@@ -1950,9 +2057,9 @@ if(DEBUG && ArPointList.length > 0){
                 selfPoints = [];
                 selfPoints.push(new ArPoint(rect.getTopLeft()));
 
-                selfPoints.push(new ArPoint( rect.right - 1, rect.ceil));
-                selfPoints.push(new ArPoint(rect.right - 1, rect.floor - 1));
-                selfPoints.push(new ArPoint(rect.left, rect.floor - 1));
+                selfPoints.push(new ArPoint( rect.right, rect.ceil));
+                selfPoints.push(new ArPoint(rect.right, rect.floor));
+                selfPoints.push(new ArPoint(rect.left, rect.floor));
             }
 
             function deleteAllPorts(){
@@ -2024,12 +2131,14 @@ if(DEBUG && ArPointList.length > 0){
                     return;
 
                 var index = ports.indexOf(port),
-                    delPort;
+                    delPort,
+                    graph = owner;
 
                 assert(index !== -1, "ARBox.deletePort: index !== -1 FAILED");
 
-                delPort = ports.splice(index, 1);
-                delPort.setOwner(null);
+                graph.deleteEdges(port);
+                delPort = ports.splice(index, 1)[0];
+                delPort.destroy();
                 delPort = null;
 
                 atomic = false;
@@ -2075,11 +2184,62 @@ if(DEBUG && ArPointList.length > 0){
             function shiftBy(offset){
                 rect.add(offset);
 
-                for(var i = 0; i < ports.length; i++){
+                var i = ports.length;
+                while(i--){
                     ports[i].shiftBy(offset);
                 }
 
+/*
+This is not necessary; the ARGraph will shift all children
+                i = childBoxes.length;
+                while(i--){
+                    childBoxes[i].shiftBy(offset);
+                }
+*/
                 calculateSelfPoints();
+            }
+
+            function resetPortAvailability(){
+                for(var i = 0; i < ports.length; i++){
+                    ports[i].resetAvailableArea();
+                }
+            }
+
+            function adjustPortAvailability(r){
+                for(var i = 0; i < ports.length; i++){
+                    ports[i].adjustAvailableArea(r);
+                }
+            }
+
+            function getParent(){
+                return mother;
+            }
+
+            function setParent(box){
+                mother = box;
+            }
+
+            function addChild(box){
+                assert(childBoxes.indexOf(box) === -1, "ARBox.addChild: box already is child of " + getID());
+                childBoxes.push(box);
+                box.setParent(this);
+            }
+
+            function removeChild(box){
+                var i = childBoxes.indexOf(box);
+                assert(i !== -1, "ARBox.removeChild: box isn't child of " + getID());
+                childBoxes.splice(i,1)[0].setParent(null);
+            }
+
+            function clearChildren(){
+                var i = childBoxes.length;
+                while(i--){
+                    removeChild(childBoxes[i]);
+                }
+            }
+
+            function getChildren(){
+                return childBoxes;
             }
 
             function getSelfPoints(){
@@ -2099,8 +2259,19 @@ if(DEBUG && ArPointList.length > 0){
             }
 
             function destroy(){
+                var i = childBoxes.length;
+
+                //notify mother of destruction
+                //if there is a mother, of course
+                if(mother)
+                    mother.removeChild(this);
+
                 this.setOwner(null);
                 deleteAllPorts();
+
+                while(i--){
+                    childBoxes[i].destroy();
+                }
             }
 
         };
@@ -2260,8 +2431,7 @@ if(DEBUG && ArPointList.length > 0){
 
             this.getStartPointPrev = function (){
                 return startpoint_prev !== null ? 
-                    ((startpoint_prev instanceof Array) ? new ArPoint(startpoint_prev[0]) : new ArPoint(startpoint_prev)) 
-                        : emptyPoint;
+                    startpoint_prev[0] || startpoint_prev : null;
             };
 
             this.isStartPointPrevNull = function () {
@@ -2269,7 +2439,7 @@ if(DEBUG && ArPointList.length > 0){
             };
 
             this.setStartPointPrev = function (point){
-                startpoint_prev = point;
+                startpoint_prev = point || null;
             };
 
             this.getStartPointPtr = function(){
@@ -2281,7 +2451,6 @@ if(DEBUG && ArPointList.length > 0){
             };
 
             this.getStartPoint = function (){
-                //return new ArPoint(startpoint[0]);
                 return startpoint !== null ? 
                     (startpoint instanceof Array ? new ArPoint(startpoint[0]) : new ArPoint(startpoint)) 
                         : emptyPoint;//returning copy of startpoint
@@ -2312,22 +2481,10 @@ if(DEBUG && ArPointList.length > 0){
 
             this.setStartPointX = function(_x){
                     startpoint[0].x = _x;
-/*
-                if(startpoint instanceof Array)
-                    startpoint[0].x = _x;
-                else
-                    startpoint.x = _x;
-*/
             };
 
             this.setStartPointY = function(_y){
                     startpoint[0].y = _y;
-/*
-                if(startpoint instanceof Array)
-                    startpoint[0].y = _y;
-                else
-                    startpoint.y = _y;
-*/
             };
 
             this.getEndPoint = function(){
@@ -2626,7 +2783,7 @@ if(DEBUG && ArPointList.length > 0){
 
             this.addEdges = function(path){
                 if(path instanceof AutoRouterPath){
-                    assert(path.getOwner() === (owner), "AREdgeList.addEdges: path.getOwner() === (owner) FAILED!");
+                    assert(path.getOwner() === owner, "AREdgeList.addEdges: path.getOwner() === owner FAILED!");
 
                     var isPathAutoRouted = path.isAutoRouted(),
                         hasCustomEdge = false,
@@ -2653,14 +2810,14 @@ if(DEBUG && ArPointList.length > 0){
                         currEdgeIndex = pointList.length - 2,
                         pos = ptrsObject.pos; 
                                              
-                    while( -1 < pos && pos < pointList.getLength()){
+                    while( pointList.getLength() && pos >= 0){
 
                         var dir = getDir(endpoint[0].minus(startpoint[0]));
 
                         var skipEdge = dir === Dir_None ? true : false,
                             isMoveable = path.isMoveable();
 
-                        if( !isMoveable && dir != Dir_Skew){
+                        if( !isMoveable && dir !== Dir_Skew){
                             var goodAngle = isRightAngle(dir);
                             assert( goodAngle, "AREdgeList.addEdges: isRightAngle(dir) FAILED!");
 
@@ -2720,11 +2877,11 @@ if(DEBUG && ArPointList.length > 0){
                                 edge.setBracketClosing(false);
                             }
 
-                            this.insert((new AutoRouterEdge()).assign(edge));
+                            this.insert(edge);
 
                         }
 
-                    ptrsObject = pointList.getPrevEdgePtrs(pos, startpoint, endpoint);
+                    ptrsObject = pointList.getPrevEdgePtrs(pos);
                     pos = ptrsObject.pos;
                     startpoint = ptrsObject.start;
                     endpoint = ptrsObject.end;
@@ -2768,7 +2925,7 @@ if(DEBUG && ArPointList.length > 0){
                             if( edge.getBracketClosing() )
                                 edge.addToPosition(0.999); 
 
-                            this.insert((new AutoRouterEdge().assign(edge))); //This should work but has only been tested in example above
+                            this.insert(edge);
                         }
                     }
                 }else if(path instanceof AutoRouterBox){
@@ -2804,7 +2961,7 @@ if(DEBUG && ArPointList.length > 0){
                             if( edge.getBracketClosing() )
                                 edge.addToPosition(0.999); 
 
-                            this.insert((new AutoRouterEdge().assign(edge))); //This should work but has only been tested in example above
+                            this.insert(edge);
                         }
                     }
                 }else if(path instanceof AutoRouterGraph){
@@ -2833,7 +2990,7 @@ if(DEBUG && ArPointList.length > 0){
                             edge.setEdgeFixed(true);
 
                             position_LoadY(edge);
-                            this.insert((new AutoRouterEdge().assign(edge))); //This should work but has only been tested in example above
+                            this.insert(edge);
                         }
                     }
 
@@ -2878,7 +3035,7 @@ if(DEBUG && ArPointList.length > 0){
                 return edge;
             };
 
-            this.getEdgeByPointer = function(startpoint, endpoint){
+            this.getEdgeByPointer = function(startpoint){
                 var edge = order_first;
                 while( edge !== null ){
                     if(edge.isSameStartPoint(startpoint))
@@ -2917,6 +3074,32 @@ if(DEBUG && ArPointList.length > 0){
 
                 return null;
             };        
+
+             this.dumpEdges = function(msg){
+                var edge = order_first,
+                    total = 1;
+                console.log(msg);
+
+                while( edge !== null ){
+                    console.log('\t' + edge.getStartPoint().x + ', ' + edge.getStartPoint().y + '\t\t' + edge.getEndPoint().x + ', ' + edge.getEndPoint().y 
+                        + '\t\t\t(' + (edge.getEdgeFixed() ? "FIXED" : "MOVEABLE" ) + ')\t\t' 
+                        + (edge.getBracketClosing() ? "Bracket Closing" : (edge.getBracketOpening() ? "Bracket Opening" : "")));
+                    edge = edge.getOrderNext();
+                    total++;
+                }
+
+                console.log("Total Edges: " + total);
+            };
+
+             this.getEdgeCount = function(){
+                 var edge = order_first,
+                     total = 1;
+                 while(edge !== null){
+                     edge = edge.getOrderNext();
+                     total++;
+                 }
+                 return total;
+             };
                    
                 //--Private Functions
             function position_GetRealY(edge, y){
@@ -3184,10 +3367,7 @@ if(DEBUG && ArPointList.length > 0){
                 assert( edge !== null, "AREdgeList.Delete: edge !== null FAILED" );
 
                 self.remove(edge);
-
                 edge.setOwner(null);
-
-                edge = undefined;
             };
 
                 //-- Private
@@ -3232,7 +3412,7 @@ if(DEBUG && ArPointList.length > 0){
 
                     if( edge !== insert && insert.getOrderPrev() !== edge )
                     {
-                        self.remove(edge); //This is where I believe the error could lie!
+                        self.remove(edge); 
                         self.insertBefore(edge, insert);
                     }
                 }
@@ -4075,11 +4255,11 @@ if(DEBUG && ArPointList.length > 0){
         var AutoRouterGraph = function (){
             var horizontal = new AutoRouterEdgeList(true),
                 vertical = new AutoRouterEdgeList(false),
-                boxes = [], 
-                bufferBoxes = [],
+                boxes = {}, 
                 paths = [], 
                 selfPoints = [],
                 self = this,
+                bufferBoxes = [],
                 box2bufferBox = {}; //maps boxId to corresponding bufferbox object
                 
             horizontal.setOwner(this);
@@ -4090,6 +4270,8 @@ if(DEBUG && ArPointList.length > 0){
             selfPoints.push(new ArPoint(ED_MAXCOORD, ED_MINCOORD));
             selfPoints.push(new ArPoint(ED_MAXCOORD, ED_MAXCOORD));
             selfPoints.push(new ArPoint(ED_MINCOORD, ED_MAXCOORD));
+
+            this.deleteEdges = deleteEdges;
 
             this.getSelfPoints = function(){
                 return selfPoints;
@@ -4144,12 +4326,11 @@ if(DEBUG && ArPointList.length > 0){
 
                     box.setOwner(null);
 
-                    var iter2 = boxes.indexOf(box);
-                    assert( iter2 > -1, "ARGraph.remove: Box does not exist");
+                    assert( boxes[box.getID()] !== undefined, "ARGraph.remove: Box does not exist");
 
-                    boxes.splice(iter2, 1);
+                    delete boxes[box.getID()];
 
-                }else{
+                }else if(box instanceof AutoRouterPath){ //ARPath
                     var path = box;
                     deleteEdges(path);
 
@@ -4163,14 +4344,13 @@ if(DEBUG && ArPointList.length > 0){
             }
 
             function deleteAllBoxes(){
-                var i = boxes.length;
-                while( i-- )
-                {
-                    //deleteBoxAndPortEdges(boxes[i]);	// no need: there's a deleteAllEdges in deleteAll
-                    boxes[i].destroy();
-                    boxes.splice(i, 1);
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        boxes[box].destroy(); 
+                        delete boxes[box];
+                    }
                 }
-
+                bufferBoxes = [];
             }
 
             function getBoxList(){
@@ -4178,21 +4358,25 @@ if(DEBUG && ArPointList.length > 0){
             }
 
             function hasNoBox(){
-                return boxes.length === 0;
+                return getBoxCount() === 0;
             }
 
             function getBoxCount(){
-                return boxes.length;
+                var count = 0;
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        count++;
+                    }
+                }
+                return count;
             }
 
             function getBoxAt(point, nearness){
-                var iter = 0;
-                while (iter < boxes.length)
-                {
-                    if ((boxes[iter]).isBoxAt(point, nearness))
-                        return (boxes[iter]);
-
-                    ++iter;
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        if (boxes[box].isBoxAt(point, nearness))
+                            return boxes[box];
+                    }
                 }
 
                 return null;
@@ -4204,23 +4388,28 @@ if(DEBUG && ArPointList.length > 0){
             }
 
             function isRectClipBoxes(rect){
-                for (var i = 0; i < boxes.length; i++)
-                {
-                    var boxRect = boxes[i].getRect();
-                    if( isRectClip(rect, boxRect) )
-                        return true;
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        var boxRect = boxes[box].getRect();
+                        if( isRectClip(rect, boxRect) )
+                            return true;
+                    }
                 }
                 return false;
             }
 
             function isRectClipBufferBoxes(rect){
-                for (var i = 0; i < boxes.length; i++)
-                {
-                    var boxRect = boxes[i].getRect();
-                    boxRect.inflateRect( BUFFER );
-                    if( isRectClip(rect, boxRect) )
-                        return true;
+                var i = bufferBoxes.length;
+
+                while(i--){
+                    var c = bufferBoxes[i].children.length;
+
+                    while(c--){
+                        if( isRectClip(rect, bufferBoxes[i].children[c]) )
+                            return true;
+                    }
                 }
+
                 return false;
             }
 
@@ -4304,15 +4493,16 @@ if(DEBUG && ArPointList.length > 0){
             }
 
             function isEmpty(){
-                return boxes.length === 0 && paths.length === 0;
+                return hasNoBox() && paths.length === 0;
             }
 
             function getSurroundRect(){
                 var rect = new ArRect(0,0,0,0);
 
-                for (var i = 0; i < boxes.length; i++)
-                {
-                    rect.unionAssign(boxes[i].getRect());
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        rect.unionAssign(boxes[box].getRect());
+                    }
                 }
 
                 for (var i = 0; i < paths.length; i++)
@@ -4375,19 +4565,17 @@ if(DEBUG && ArPointList.length > 0){
                 assert( getPointCoord(point, dir) != stophere, "ArGraph.goToNextBufferBox: getPointCoord(point, dir) != stophere FAILED" );
 
                 var boxby = null,
-                    iter = 0,
-                    boxList = bufferBoxes.length > 0 ? bufferBoxes : boxes;
+                    iter = 0;
 
-                    //Add a new collection that handles overlapping boxes (creates a larger encompassing box)
-                    while (iter < boxList.length)
+                    while (iter < bufferBoxes.length)
                     {
-                        var boxRect = boxList[iter].box;
+                        var boxRect = bufferBoxes[iter].box;
 
                         if( !isPointInDirFrom(point, boxRect, dir) && //Add support for entering the parent box
                                 isPointBetweenSides(point, boxRect, dir) &&     // if it will not put the point in a corner (relative to dir2)
-                                isCoordInDirFrom(stophere, getChildRectOuterCoordFrom(boxList[iter], dir, point).coord, dir) ){ //Return extreme (parent box) for this comparison?
-                            stophere = getChildRectOuterCoordFrom(boxList[iter], dir, point).coord;
-                            boxby = boxList[iter]; 
+                                isCoordInDirFrom(stophere, getChildRectOuterCoordFrom(bufferBoxes[iter], dir, point).coord, dir) ){ //Return extreme (parent box) for this comparison
+                            stophere = getChildRectOuterCoordFrom(bufferBoxes[iter], dir, point).coord;
+                            boxby = bufferBoxes[iter]; 
                         }
 
                         ++iter;
@@ -4415,6 +4603,7 @@ if(DEBUG && ArPointList.length > 0){
                     points = [ [new ArPoint(point)] ],
                     hasExit = true;
 
+                assert(child !== null, "ARGraph.hugChildren: child !== null FAILED");
                 exitCondition = exitCondition === undefined ? function(pt) { return !parentBox.ptInRect(pt); } : exitCondition;
 
                 while( hasExit && !exitCondition( point, bufferObject ) ){
@@ -4451,10 +4640,10 @@ if(DEBUG && ArPointList.length > 0){
 
             }
 
-            function goToNextBox(point, dir, stop1, stop2){
-                var stophere= stop1,
-                    boxList = boxes;//bufferBoxes.length > 0 ? bufferBoxes : boxes;
+            function goToNextBox(point, dir, stop1, boxList){
+                var stophere= stop1;
 
+/*
                 if(stop2 !== undefined){
                     if( stop2 instanceof Array ){
                         boxList = stop2;
@@ -4464,7 +4653,8 @@ if(DEBUG && ArPointList.length > 0){
                             chooseInDir(stop1, stop2, reverseDir(dir));
                     }
 
-                }else if(stop1 instanceof ArPoint){
+                }else */
+                if(stop1 instanceof ArPoint){
                     stophere = getPointCoord(stophere, dir);
                 }
 
@@ -4472,23 +4662,19 @@ if(DEBUG && ArPointList.length > 0){
                 assert( getPointCoord(point, dir) != stophere, "ArGraph.goToNextBox: getPointCoord(point, dir) != stophere FAILED" );
 
                 var boxby = null,
-                    iter = 0;
+                    iter = boxList.length;
 
-                    //Add a new collection that handles overlapping boxes (creates a larger encompassing box)
-                    while (iter < boxList.length)
-                    {
-                        var boxRect = boxList[iter] instanceof ArRect ?  boxList[iter] : boxList[iter].getRect();
+                while(iter--){
+                        var boxRect = boxList[iter];
 
                         if( isPointInDirFrom(point, boxRect, reverseDir(dir)) &&
                                 isPointBetweenSides(point, boxRect, dir) &&
                                 isCoordInDirFrom(stophere, getRectOuterCoord(boxRect, reverseDir(dir)), dir) ) 
                         {
                             stophere = getRectOuterCoord(boxRect, reverseDir(dir));
-                            boxby = boxList[iter].box || boxList[iter];
+                            boxby = boxList[iter];
                         }
-
-                        ++iter;
-                    }
+                }
 
                 if(isHorizontal(dir))
                     point.x = stophere;
@@ -4500,11 +4686,8 @@ if(DEBUG && ArPointList.length > 0){
 
             function getLimitsOfEdge(startPt, endPt, min, max){
                 var t,
-                    start = (new ArPoint()),
-                    end = (new ArPoint()),
-                    iter = 0;
-                start.assign(startPt);
-                end.assign(endPt);
+                    start = (new ArPoint(startPt)),
+                    end = (new ArPoint(endPt));
 
                 if( start.y === end.y )
                 {
@@ -4515,17 +4698,17 @@ if(DEBUG && ArPointList.length > 0){
                         end.x = t;
                     }
 
-                    while( iter < boxes.length)
-                    {
-                        var rect = (boxes[iter]).getRect();
-                        ++iter;
+                    for(var box in boxes){
+                        if(boxes.hasOwnProperty(box)){
+                            var rect = boxes[box].getRect();
 
-                        if(start.x < rect.right && rect.left <= end.x)
-                        {
-                            if( rect.floor <= start.y && rect.floor > min )
-                                min = rect.floor;
-                            if( rect.ceil > start.y && rect.ceil < max )
-                                max = rect.ceil;
+                            if(start.x < rect.right && rect.left <= end.x)
+                            {
+                                if( rect.floor <= start.y && rect.floor > min )
+                                    min = rect.floor;
+                                if( rect.ceil > start.y && rect.ceil < max )
+                                    max = rect.ceil;
+                            }
                         }
                     }
                 }
@@ -4540,17 +4723,17 @@ if(DEBUG && ArPointList.length > 0){
                         end.y = t;
                     }
 
-                    while( iter < boxes.length)
-                    {
-                        var rect = (boxes[iter]).getRect();
-                        ++iter;
+                    for(var box in boxes){
+                        if(boxes.hasOwnProperty(box)){
+                            var rect = boxes[box].getRect();
 
-                        if(start.y < rect.floor && rect.ceil <= end.y)
-                        {
-                            if( rect.right <= start.x && rect.right > min )
-                                min = rect.right;
-                            if( rect.left > start.x && rect.left < max )
-                                max = rect.left;
+                            if(start.y < rect.floor && rect.ceil <= end.y)
+                            {
+                                if( rect.right <= start.x && rect.right > min )
+                                    min = rect.right;
+                                if( rect.left > start.x && rect.left < max )
+                                    max = rect.left;
+                            }
                         }
                     }
                 }
@@ -4564,181 +4747,155 @@ if(DEBUG && ArPointList.length > 0){
                 return getBoxAt(point) !== null;
             }
 
-            function connect(path, startpoint, endpoint){
-                if(startpoint === undefined){
+            function connect(path){
+                var ports = path.calculateStartEndPorts(),
+                    startport = ports.src,
+                    endport = ports.dst,
+                    startpoint = path.getStartPoint(),
+                    endpoint = path.getEndPoint();
 
-                    var startport = path.getStartPort(),
-                        endport = path.getEndPort(),
-                        startdir = path.getStartDir(),
-                        startportHasLimited = false,
-                        startportCanHave = true;
+                assert(startport.hasPoint(startpoint), "ARGraph.connect: startport.hasPoint(startpoint) FAILED");
+                assert(endport.hasPoint(endpoint), "ARGraph.connect: endport.hasPoint(endpoint) FAILED");
 
-                    if (startdir != Dir_None) {
-                        startportHasLimited = startport.hasLimitedDirs();
-                        startportCanHave = startport.canHaveStartEndPointOn(startdir, true);
-                    }
-                    if( startdir === Dir_None ||							// recalc startdir if empty
-                        startportHasLimited && !startportCanHave)		// or is limited and userpref is invalid
-                    {
-                        startdir = startport.getStartEndDirTo(endport.getCenter(), true);
-                    }
+                if( startpoint.equals(endpoint) )
+                    stepOneInDir(startpoint, nextClockwiseDir(startdir));
 
-                    var enddir = path.getEndDir(),
-                        endportHasLimited = false,
-                        endportCanHave = true;
+                var startId = startport.getOwner().getID(),
+                    endId = endport.getOwner().getID(),
+                    startdir = startport.port_OnWhichEdge(startpoint),
+                    enddir = endport.port_OnWhichEdge(endpoint);
 
-                    if (enddir != Dir_None) {
-                        endportHasLimited = endport.hasLimitedDirs();
-                        endportCanHave = endport.canHaveStartEndPointOn(enddir, false);
-                    }
-                    if( enddir === Dir_None ||							// like above
-                        endportHasLimited && !endportCanHave)
-                    {
-                        enddir = endport.getStartEndDirTo(startport.getCenter(), false, startport === endport ? startdir : Dir_None );
-                    }
+                if(path.isAutoRouted() && box2bufferBox[startId] === box2bufferBox[endId]
+                        && startdir === reverseDir(enddir) && startport.getOwner() !== endport.getOwner()){
 
-                    startpoint = startport.createStartEndPointTo(endport.getCenter(), startdir);
-                    endpoint = endport.createStartEndPointTo(startpoint, enddir);
-
-                    if( startpoint.equals(endpoint) )
-                        startpoint = stepOneInDir(startpoint, nextClockwiseDir(startdir));
-
-                    return connect(path, startpoint, endpoint);
-
+                    return connectPointsSharingParentBox(path, startpoint, endpoint, startdir);
                 }else{
-                    assert(startpoint instanceof ArPoint, "ARGraph.connect: startpoint instanceof ArPoint FAILED");
-                    assert( path != null && path.getOwner() === self, "ARGraph.connect: path != null && path.getOwner() === self FAILED");
-                    assert( !path.isConnected(), "ARGraph.connect: !path.isConnected() FAILED");
-                    assert( !startpoint.equals(endpoint), "ARGraph.connect: !startpoint.equals(endpoint) FAILED");
 
-                    var startPort = path.getStartPort();
-                    assert(startPort != null, "ARGraph.connect: startPort != null FAILED");
-
-                    var startdir = startPort.port_OnWhichEdge(startpoint),
-                        endPort = path.getEndPort();
-
-                    assert(endPort != null, "ARGraph.connect: endPort != null FAILED");
-                    var enddir = endPort.port_OnWhichEdge(endpoint);
-                    assert( isRightAngle(startdir) && isRightAngle(enddir), "ARGraph.connect: isRightAngle(startdir) && isRightAngle(enddir) FAILED" );
-
-                    //Find the bufferbox containing startpoint, endpoint
-                    var startBox = box2bufferBox[startPort.getOwner().getID()].box,
-                        endBox = box2bufferBox[endPort.getOwner().getID()].box;
-
-                    var start = new ArPoint(startpoint);
-                    getOutOfBox({ "point": start, 
-                            "dir": startdir, 
-                            "end": endpoint, 
-                            "box": startPort.getOwner() } );
-                    assert( !start.equals(startpoint), "ARGraph.connect: !start.equals(startpoint) FAILED" );
-
-                    var end = new ArPoint(endpoint);
-                    getOutOfBox({ "point": end, 
-                            "dir": enddir, 
-                            "end": start, 
-                            "box": endPort.getOwner() } ) ;
-                    assert( !end.equals(endpoint), "ARGraph.connect: !end.equals(endpoint) FAILED" );
-
-                    assert( path.isEmpty(),  "ARGraph.connect: path.isEmpty() FAILED" );
-
-                    var ret = new ArPointListPath(),
-                        isAutoRouted = path.isAutoRouted();
-                    if (isAutoRouted)
-                        connectPoints(ret, start, end, startdir, enddir);
-
-                    if (!isAutoRouted)
-                    {
-                        var ret2 = path.applyCustomizationsBeforeAutoConnectPoints();
-
-                        if (ret2.length > 0)
-                        {
-                            var pos = 0;
-                            while( pos < ret2.length)
-                            {
-                                ret.push(ret2[pos++]);
-                            }
-                        }
-                    }
-
-                    path.deleteAll();
-                    path.addTail(startpoint);
-                    var pos = 0;
-                    while( pos < ret.getLength())
-                    {
-                        var p = ret.get(pos++)[0];
-                        path.addTail(p);
-                    }
-                    path.addTail(endpoint);
-
-                    if (isAutoRouted) {
-                        path.simplifyTrivially(); 
-                        simplifyPathCurves(path);
-                        simplifyPathPoints(path);
-                        centerStairsInPathPoints(path, startdir, enddir);
-
-                        //Make sure if a straight line is possible, the path is a straight line
-                        //Note, this may make it so the stems are no longer centered in the port.
-                        if(path.getPointList().getLength() === 4){
-                            var startDir = startPort.port_OnWhichEdge(startpoint),
-                                endDir = endPort.port_OnWhichEdge(endpoint),
-                                tstStart,
-                                tstEnd;
-
-                            if( startDir === reverseDir(endDir) ){
-                                var newStart = new ArPoint(startpoint),
-                                    newEnd = new ArPoint(endpoint),
-                                    startRect = startPort.getRect(),
-                                    endRect = endPort.getRect(),
-                                    minOverlap,
-                                    maxOverlap;
-
-                                if( isHorizontal(startDir) ){
-                                    minOverlap = Math.min(startRect.floor, endRect.floor);
-                                    maxOverlap = Math.max(startRect.ceil, endRect.ceil);
-
-                                    var newY = (minOverlap + maxOverlap)/2;
-                                    newStart.y = newY;
-                                    newEnd.y = newY;
-
-                                    tstStart = new ArPoint(getRectOuterCoord(startPort.getOwner().getRect(), startDir), newStart.y);
-                                    tstEnd = new ArPoint(getRectOuterCoord(endPort.getOwner().getRect(), endDir), newEnd.y);
-
-                                }else{
-                                    minOverlap = Math.min(startRect.right, endRect.right);
-                                    maxOverlap = Math.max(startRect.left, endRect.left);
-
-                                    var newX = (minOverlap + maxOverlap)/2;
-                                    newStart.x = newX;
-                                    newEnd.x = newX;
-
-                                    tstStart = new ArPoint(newStart.x, getRectOuterCoord(startPort.getOwner().getRect(), startDir));
-                                    tstEnd = new ArPoint(newEnd.x, getRectOuterCoord(endPort.getOwner().getRect(), endDir));
-                                }
-
-                                if( startRect.ptInRect(newStart) && endRect.ptInRect(newEnd)
-                                        && !isLineClipBoxes(tstStart, tstEnd) ){
-
-                                    startpoint.assign(newStart);
-                                    endpoint.assign(newEnd);
-                                    path.getPointList().splice(1, 2);
-                                }
-                            }
-
-                        }
-                    }
-                    path.setState(ARPATHST_Connected);
-
-                    // Apply custom edge modifications - step 1
-                    // (Step 1: Move the desired edges - see in AutoRouterGraph::Connect(AutoRouterPath* path, ArPoint& startpoint, ArPoint& endpoint)
-                    //  Step 2: Fix the desired edges - see in AutoRouterEdgeList::addEdges(AutoRouterPath* path))
-                    if (isAutoRouted)
-                        path.applyCustomizationsAfterAutoConnectPointsAndStuff();
-
-                    return addEdges(path);
+                    return connectPathWithPoints(path, startpoint, endpoint);
                 }
+
             }
 
-            function connectPoints(ret, start, end, hintstartdir, hintenddir){
+            function connectPathWithPoints(path, startpoint, endpoint){
+                assert(startpoint instanceof ArPoint, "ARGraph.connect: startpoint instanceof ArPoint FAILED");
+                assert( path != null && path.getOwner() === self, "ARGraph.connect: path != null && path.getOwner() === self FAILED");
+                assert( !path.isConnected(), "ARGraph.connect: !path.isConnected() FAILED");
+                assert( !startpoint.equals(endpoint), "ARGraph.connect: !startpoint.equals(endpoint) FAILED");
+
+                var startPort = path.getStartPort();
+                assert(startPort != null, "ARGraph.connect: startPort != null FAILED");
+
+                var startdir = startPort.port_OnWhichEdge(startpoint),
+                    endPort = path.getEndPort();
+
+                assert(endPort != null, "ARGraph.connect: endPort != null FAILED");
+                var enddir = endPort.port_OnWhichEdge(endpoint);
+                assert( isRightAngle(startdir) && isRightAngle(enddir), "ARGraph.connect: isRightAngle(startdir) && isRightAngle(enddir) FAILED" );
+
+                //Find the bufferbox containing startpoint, endpoint
+                var startBox = box2bufferBox[startPort.getOwner().getID()].box,
+                    endBox = box2bufferBox[endPort.getOwner().getID()].box;
+
+                var start = new ArPoint(startpoint);
+                getOutOfBox({ "point": start, 
+                        "dir": startdir, 
+                        "end": endpoint, 
+                        "box": startPort.getOwner() } );
+                assert( !start.equals(startpoint), "ARGraph.connect: !start.equals(startpoint) FAILED" );
+
+                var end = new ArPoint(endpoint);
+                getOutOfBox({ "point": end, 
+                        "dir": enddir, 
+                        "end": start, 
+                        "box": endPort.getOwner() } ) ;
+                assert( !end.equals(endpoint), "ARGraph.connect: !end.equals(endpoint) FAILED" );
+
+                assert( path.isEmpty(),  "ARGraph.connect: path.isEmpty() FAILED" );
+
+                var ret = new ArPointListPath(),
+                    isAutoRouted = path.isAutoRouted();
+                if (isAutoRouted)
+                    connectPoints(ret, start, end, startdir, enddir);
+
+                if (!isAutoRouted)
+                {
+                    var ret2 = path.applyCustomizationsBeforeAutoConnectPoints();
+
+                    if (ret2.length > 0)
+                    {
+                        var pos = 0;
+                        while( pos < ret2.length)
+                        {
+                            ret.push(ret2[pos++]);
+                        }
+                    }
+                }
+
+                path.deleteAll();
+                path.addTail(startpoint);
+                var pos = 0;
+                while( pos < ret.getLength())
+                {
+                    var p = ret.get(pos++)[0];
+                    path.addTail(p);
+                }
+                path.addTail(endpoint);
+
+                if (isAutoRouted) {
+                    simplifyPathCurves(path);
+                    path.simplifyTrivially(); 
+                    simplifyPathPoints(path);
+                    centerStairsInPathPoints(path, startdir, enddir);
+                }
+                path.setState(ARPATHST_Connected);
+
+                // Apply custom edge modifications - step 1
+                // (Step 1: Move the desired edges - see in AutoRouterGraph::Connect(AutoRouterPath* path, ArPoint& startpoint, ArPoint& endpoint)
+                //  Step 2: Fix the desired edges - see in AutoRouterEdgeList::addEdges(AutoRouterPath* path))
+                if (isAutoRouted)
+                    path.applyCustomizationsAfterAutoConnectPointsAndStuff();
+
+                return addEdges(path);
+            }
+
+            function connectPointsSharingParentBox(path, startpoint, endpoint, startdir){
+                //Connect points that share a parentbox and face each other
+                //These will not need the simplification and complicated path finding
+                var start = new ArPoint(startpoint),
+                    //end = new ArPoint(endpoint),
+                    dx = endpoint.x - start.x,
+                    dy = endpoint.y - start.y;
+
+                path.deleteAll();
+
+                path.addTail(startpoint);
+                if(dx !== 0 && dy !== 0){
+                    if(isHorizontal(startdir)){
+                        path.addTail(new ArPoint(start));
+                        start.x += dx/2;
+                        path.addTail(new ArPoint(start));
+                        start.y += dy;
+                        path.addTail(new ArPoint(start));
+                    }else{
+                        path.addTail(new ArPoint(start));
+                        start.y += dy/2;
+                        path.addTail(new ArPoint(start));
+                        start.x += dx;
+                        path.addTail(new ArPoint(start));
+                    }
+                }
+                //path.addTail(end);
+                path.addTail(endpoint);
+
+                path.setState(ARPATHST_Connected);
+                path.applyCustomizationsAfterAutoConnectPointsAndStuff();
+
+                return addEdges(path);
+
+            }
+
+
+            function connectPoints(ret, start, end, hintstartdir, hintenddir, flipped){
                 assert( ret.getLength() === 0, "ArGraph.connectPoints: ret.getLength() === 0 FAILED");
 
                 var thestart = new ArPoint( start ), 
@@ -4777,16 +4934,8 @@ if(DEBUG && ArPointList.length > 0){
                         bufferObject,
                         box;
 
-                    if( bufferBoxes.length === 0 ){
-                        box = goToNextBox(start, dir1, end);
-                    }else{
-                        bufferObject = goToNextBufferBox({ "point": start, "dir": dir1, "dir2": dir2, "end": end });//Modified goToNextBox (that allows entering parent buffer boxes here
-                        box = bufferObject === null ? null : bufferObject.box;
-                    }
-/*
-                        box = goToNextBox(start, dir1, end);
-                        bufferObject = box !== null ? box2bufferBox[ box.getID() ] : null;
-*/
+                    bufferObject = goToNextBufferBox({ "point": start, "dir": dir1, "dir2": dir2, "end": end });//Modified goToNextBox (that allows entering parent buffer boxes here
+                    box = bufferObject === null ? null : bufferObject.box;
 
                     //If goToNextBox does not modify start
                     if( start.equals(old) )
@@ -4799,12 +4948,19 @@ if(DEBUG && ArPointList.length > 0){
                         }
 
                         assert( dir1 != dir2 && dir1 != Dir_None && dir2 != Dir_None, "ARGraph.connectPoints: dir1 != dir2 && dir1 != Dir_None && dir2 != Dir_None FAILED");
-                        if( bufferObject.box.ptInRect( end ) && !bufferObject.box.ptInRect( start ) ){
+                        if( bufferObject.box.ptInRect( end ) && !bufferObject.box.ptInRect( start ) && flipped ){
+                            //Unfortunately, if parentboxes are a pixel apart, start/end can get stuck and not cross the border
+                            //separating them.... This is a simple hack to get them to cross it.
+                            if(isHorizontal(dir1))
+                                start.x = end.x;
+                            else
+                                start.y = end.y;
+                        }else if( bufferObject.box.ptInRect( end ) && !flipped ){
                             var oldEnd = new ArPoint(end),
                                 ret2 = new ArPointListPath(),
                                 i;
 
-                            connectPoints(ret2, end, start, hintenddir, dir1);
+                            connectPoints(ret2, end, start, hintenddir, dir1, true);
                             i = ret2.getLength() - 1;
 
                             while( i-- > 1){
@@ -4817,12 +4973,7 @@ if(DEBUG && ArPointList.length > 0){
                         } else if( isPointInDirFrom(end, rect, dir2) )
                         {
                             assert( !isPointInDirFrom(start, rect, dir2), "ARGraph.connectPoints: !isPointInDirFrom(start, rect, dir2) FAILED");
-                            //goToNextBox(start, dir2, end);
-                            if( bufferBoxes.length === 0 ){
-                                goToNextBox(start, dir2, end); 
-                            }else{
-                                box = goToNextBufferBox({ "point": start, "dir": dir2, "dir2": dir1, "end": end });
-                            }
+                            box = goToNextBufferBox({ "point": start, "dir": dir2, "dir2": dir1, "end": end });
 
                             // this assert fails if two boxes are adjacent, and a connection wants to go between
                             //assert( isPointInDirFrom(start, rect, dir2), "ARGraph.connectPoints: isPointInDirFrom(start, rect, dir2) FAILED");//This is not the best check with parent boxes
@@ -4830,7 +4981,8 @@ if(DEBUG && ArPointList.length > 0){
                                 var pts;
                                 if( box.children.length > 1 ){
                                     pts = hugChildren( box, start, dir2, dir1, 
-                                        function( pt, bo ) { return getPointCoord( pt, dir1 ) === getRectOuterCoord( bo.box, dir1); } ); 
+                                        function( pt, bo ) { return (getPointCoord( pt, dir1 ) === getRectOuterCoord( bo.box, dir1)) 
+                                                                            || ( isPointInDirFrom(pt, end, dir1)); } ); 
                                 }else{
                                     pts = hugChildren( bufferObject, start, dir1, dir2 );
                                 }
@@ -4916,7 +5068,9 @@ if(DEBUG && ArPointList.length > 0){
 
                             }else{ //If the box has multiple children
                                 var pts = hugChildren( bufferObject, start, dir1, dir2, 
-                                        function( pt, bo ) { return getPointCoord( pt, dir1 ) === getRectOuterCoord( bo.box, dir1); } ); 
+                                        //exitCondition is when you get to the dir1 side of the box or when you pass end
+                                        function( pt, bo ) { return (getPointCoord( pt, dir1 ) === getRectOuterCoord( bo.box, dir1)) 
+                                                                            || ( isPointInDirFrom(pt, end, dir1)); } ); 
                                 if( pts !== null ){
 
                                     //Add new points to the current list 
@@ -5034,20 +5188,18 @@ if(DEBUG && ArPointList.length > 0){
             function addAllEdges(){
                 assert( horizontal.isEmpty() && vertical.isEmpty(), "ARGraph.addAllEdges: horizontal.isEmpty() && vertical.isEmpty() FAILED"  );
 
-                var iter = 0;
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        addBoxAndPortEdges(boxes[box]);
+                    }
 
-                while (iter < boxes.length)
-                {
-                    addBoxAndPortEdges(boxes[iter]);
-                    ++iter;
-                }
+                    var i = 0;
 
-                var iterP = 0;
-
-                while (iterP < paths.length)
-                {
-                    addEdges(paths[iterP]);
-                    iterP++;
+                    while (i < paths.length)
+                    {
+                        addEdges(paths[i]);
+                        i++;
+                    }
                 }
             }
 
@@ -5068,6 +5220,9 @@ if(DEBUG && ArPointList.length > 0){
                     addEdges(pl[ii]);
                     ++ii;
                 }
+
+                //Add to bufferboxes
+                addToBufferBoxes(box);
             }
 
             function deleteBoxAndPortEdges(box){
@@ -5076,10 +5231,12 @@ if(DEBUG && ArPointList.length > 0){
                 deleteEdges(box);
 
                 var pl = box.getPortList(),
-                    ii = 0;
-                while( ii < pl.length){
-                    deleteEdges(pl[ii++]);
+                    i = 0;
+                while( i < pl.length){
+                    deleteEdges(pl[i++]);
                 }
+
+                removeFromBufferBoxes(box);
             }
 
             function getEdgeList(ishorizontal){
@@ -5116,8 +5273,7 @@ if(DEBUG && ArPointList.length > 0){
                 assert( pppointpos < points.getLength() && ppointpos < points.getLength() && pointpos < points.getLength() && npointpos < points.getLength() && nnpointpos < points.getLength(), 
                     "ARGraph.candeleteTwoEdgesAt: pppointpos < points.getLength() && ppointpos < points.getLength() && pointpos < points.getLength() && npointpos < points.getLength() && nnpointpos < points.getLength() FAILED");
 
-                var dir = getDir({ 'cx': parseInt(npoint.x - point.x), //'cast' it to an int to remove any decimal value
-                                   'cy': parseInt(npoint.y - point.y) }); //Unfortunately, I need this to be a rough value or it may not correctly determine direction
+                var dir = getDir(npoint.minus(point));
 
                 assert( isRightAngle(dir), "ARGraph.candeleteTwoEdgesAt: isRightAngle(dir) FAILED");
                 var ishorizontal = isHorizontal(dir);
@@ -5151,7 +5307,7 @@ if(DEBUG && ArPointList.length > 0){
                 var pointpos = pos, //Getting the next, and next-next, points
                     point = points.get(pos++)[0],
                     npointpos = pos,
-                    npoint = points.get(pos++)[0],
+                    npoint = points.get(pos++),
                     nnpointpos = pos,
                     nnpoint = points.get(pos++)[0],
                     nnnpointpos = pos;
@@ -5167,33 +5323,34 @@ if(DEBUG && ArPointList.length > 0){
                 assert( pppointpos < points.getLength() && ppointpos < points.getLength() && pointpos < points.getLength() && npointpos < points.getLength() && nnpointpos < points.getLength(), "ARGraph.deleteTwoEdgesAt: pppointpos < points.getLength() && ppointpos < points.getLength() && pointpos < points.getLength() && npointpos < points.getLength() && nnpointpos < points.getLength() FAILED");
                 assert( pppoint !== null && ppoint !== null && point !== null && npoint !== null && nnpoint !== null, "ARGraph.deleteTwoEdgesAt: pppoint !== null && ppoint !== null && point !== null && npoint !== null && nnpoint !== null FAILED");
 
-                var dir = getDir(npoint.minus(point));
+                var dir = getDir(npoint[0].minus(point));
+
                 assert( isRightAngle(dir), "ARGraph.deleteTwoEdgesAt: isRightAngle(dir) FAILED");
                 var ishorizontal = isHorizontal(dir);
 
                 var newpoint = new ArPoint();
                 if(ishorizontal){
-                    newpoint.x = getPointCoord(npoint, ishorizontal);
+                    newpoint.x = getPointCoord(npoint[0], ishorizontal);
                     newpoint.y = getPointCoord(ppoint, !ishorizontal);
                 }else{
                     newpoint.x = getPointCoord(ppoint, !ishorizontal);
-                    newpoint.y = getPointCoord(npoint, ishorizontal);
+                    newpoint.y = getPointCoord(npoint[0], ishorizontal);
                 }
 
                 assert( getDir(newpoint.minus(ppoint)) === dir, "ARGraph.deleteTwoEdgesAt: getDir(newpoint.minus(ppoint)) === dir FAILED");
 
-                assert( !isLineClipBoxes(newpoint, npoint), "ARGraph.deleteTwoEdgesAt: !isLineClipBoxes(newpoint, npoint) FAILED");
+                assert( !isLineClipBoxes(newpoint, npoint[0]), "ARGraph.deleteTwoEdgesAt: !isLineClipBoxes(newpoint, npoint[0]) FAILED");
                 assert( !isLineClipBoxes(newpoint, ppoint), "ARGraph.deleteTwoEdgesAt: !isLineClipBoxes(newpoint, ppoint) FAILED");
 
                 var hlist = getEdgeList(ishorizontal),
                     vlist = getEdgeList(!ishorizontal);
 
-                var ppedge = hlist.getEdgeByPointer(pppoint, ppoint),
-                    pedge = vlist.getEdgeByPointer(ppoint, point),
-                    nedge = hlist.getEdgeByPointer(point, npoint),
-                    nnedge = vlist.getEdgeByPointer(npoint, nnpoint);
+                var ppedge = hlist.getEdgeByPointer(pppoint),
+                    pedge = vlist.getEdgeByPointer(ppoint),
+                    nedge = hlist.getEdgeByPointer(point),
+                    nnedge = vlist.getEdgeByPointer(npoint[0]);
 
-                assert( ppedge != null && pedge != null && nedge != null && nnedge != null, "ARGraph.deleteTwoEdgesAt:  ppedge != null && pedge != null && nedge != null && nnedge != null FAILED");
+                assert( ppedge !== null && pedge !== null && nedge !== null && nnedge !== null, "ARGraph.deleteTwoEdgesAt:  ppedge !== null && pedge !== null && nedge !== null && nnedge !== null FAILED");
 
                 vlist.Delete(pedge);
                 hlist.Delete(nedge);
@@ -5208,8 +5365,8 @@ if(DEBUG && ArPointList.length > 0){
                 if( nnnpointpos < points.getLength())
                 {
                     var nnnedge = hlist.getEdgeByPointer(nnpoint, (nnnpointpos)); 
-                    assert( nnnedge != null, "ARGraph.deleteTwoEdgesAt: nnnedge != null FAILED");
-                    assert( nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint), "ARGraph.deleteTwoEdgesAt: nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint) FAILED" );
+                    assert( nnnedge !== null, "ARGraph.deleteTwoEdgesAt: nnnedge !== null FAILED");
+                    assert( nnnedge.getStartPointPrev().equals(npoint[0]) && nnnedge.getStartPointPtr()[0].equals(nnpoint), "ARGraph.deleteTwoEdgesAt: nnnedge.getStartPointPrev().equals(npoint[0]) && nnnedge.getStartPoint().equals(nnpoint) FAILED" );
                     nnnedge.setStartPointPrev(ppoint);
                 }
 
@@ -5278,7 +5435,7 @@ if(DEBUG && ArPointList.length > 0){
                 if( nnnpointpos < points.getLength())
                 {
                     var nnnedge = vlist.getEdgeByPointer(nnpoint, (nnnpointpos)); //&*
-                    assert( nnnedge != null && nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint), "ARGraph.deleteSamePointsAt: nnnedge != null && nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint) FAILED");
+                    assert( nnnedge !== null && nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint), "ARGraph.deleteSamePointsAt: nnnedge !== null && nnnedge.getStartPointPrev().equals(npoint) && nnnedge.getStartPoint().equals(nnpoint) FAILED");
                     nnnedge.setStartPointPrev(ppoint);
                 }
 
@@ -5289,15 +5446,17 @@ if(DEBUG && ArPointList.length > 0){
 
             function simplifyPaths(){
                 var was = false,
-                    iter = 0;
+                    i = 0;
 
-                while (iter < paths.length)
+                while (i < paths.length)
                 {
-                    var path = paths[iter++];
+                    var path = paths[i++];
 
                     if (path.isAutoRouted()) {
                         var pointList = path.getPointList(),
                             pointpos = 0;
+
+                        fixShortPaths(path);
 
                         while( pointpos < pointList.getLength() )
                         {
@@ -5396,7 +5555,7 @@ if(DEBUG && ArPointList.length > 0){
 
                         if( p4x < p3x && p3x < p1x )
                         {
-                            var m = (p4x + p1x)/2;
+                            var m = Math.round((p4x + p1x)/2);
                             if(h){
                                 np2.x = m;
                                 np3.x = m;
@@ -5409,7 +5568,7 @@ if(DEBUG && ArPointList.length > 0){
                             p4x = tmp.min;
                             p1x = tmp.max;
 
-                            m = (p4x + p1x)/2;
+                            m = Math.round((p4x + p1x)/2);
 
                             if(h){
                                 np2.x = m;
@@ -5434,6 +5593,85 @@ if(DEBUG && ArPointList.length > 0){
 
                 if(DEBUG)
                     path.assertValidPoints();
+            }
+
+            function fixShortPaths(path){
+            //Make sure if a straight line is possible, the path is a straight line
+            //Note, this may make it so the stems are no longer centered in the port.
+
+                var startPort = path.getStartPort(),
+                    endPort = path.getEndPort(),
+                    len = path.getPointList().getLength();
+
+                if(len === 4){
+                    var points = path.getPointList(),
+                        startpoint = points.get(0)[0],
+                        endpoint = points.get(len - 1)[0],
+                        startDir = startPort.port_OnWhichEdge(startpoint),
+                        endDir = endPort.port_OnWhichEdge(endpoint),
+                        tstStart,
+                        tstEnd;
+
+                    if( startDir === reverseDir(endDir) ){
+                        var newStart = new ArPoint(startpoint),
+                            newEnd = new ArPoint(endpoint),
+                            startRect = startPort.getRect(),
+                            endRect = endPort.getRect(),
+                            minOverlap,
+                            maxOverlap;
+
+                        if( isHorizontal(startDir) ){
+                            minOverlap = Math.min(startRect.floor, endRect.floor);
+                            maxOverlap = Math.max(startRect.ceil, endRect.ceil);
+
+                            var newY = (minOverlap + maxOverlap)/2;
+                            newStart.y = newY;
+                            newEnd.y = newY;
+
+                            tstStart = new ArPoint(getRectOuterCoord(startPort.getOwner().getRect(), startDir), newStart.y);
+                            tstEnd = new ArPoint(getRectOuterCoord(endPort.getOwner().getRect(), endDir), newEnd.y);
+
+                        }else{
+                            minOverlap = Math.min(startRect.right, endRect.right);
+                            maxOverlap = Math.max(startRect.left, endRect.left);
+
+                            var newX = (minOverlap + maxOverlap)/2;
+                            newStart.x = newX;
+                            newEnd.x = newX;
+
+                            tstStart = new ArPoint(newStart.x, getRectOuterCoord(startPort.getOwner().getRect(), startDir));
+                            tstEnd = new ArPoint(newEnd.x, getRectOuterCoord(endPort.getOwner().getRect(), endDir));
+                        }
+
+                        if( startRect.ptInRect(newStart) && endRect.ptInRect(newEnd)
+                                && !isLineClipBoxes(tstStart, tstEnd) ){
+
+                            
+                            var ishorizontal = isHorizontal(startDir),
+                                hlist = getEdgeList(ishorizontal),
+                                vlist = getEdgeList(!ishorizontal),
+                                edge = hlist.getEdgeByPointer(startpoint),
+                                edge2 = vlist.getEdgeByPointer(points.get(1)[0]),
+                                edge3 = hlist.getEdgeByPointer(points.get(2)[0]);
+
+                            vlist.Delete(edge2);
+                            hlist.Delete(edge3);
+                            hlist.remove(edge);
+
+                            startpoint.assign(newStart); //The values of startpoint is changed but we don't change the startpoint of the edge
+                            endpoint.assign(newEnd);    //to maintain the reference that the port has to the startpoint
+                            edge.setEndPoint(endpoint);
+
+                            edge.setStartPointPrev(null);
+                            edge.setEndPointNext(null);
+
+                            edge.setPositionY(getPointCoord(newStart, nextClockwiseDir(startDir) ));
+                            hlist.insert(edge);
+
+                            points.splice(1, 2);
+                        }
+                    }
+                }
             }
 
             function simplifyPathCurves(path){
@@ -5582,90 +5820,126 @@ if(DEBUG && ArPointList.length > 0){
                 }
             }
 
-            function createBufferBoxes(){
-                //First I will create the atomic buffer boxes and store them in order of x
-                var i = boxes.length,
-                    k = -1,
-                    j = 0,
-                    added = false,
-                    bufferBox,
-                    rect,
-                    box,
-                    collection = [];
+            function addToBufferBoxes(inputBox){
+                var i = bufferBoxes.length,
+                    box = { 'rect': new ArRect(inputBox.getRect()), 'id': inputBox.getID() },
+                    overlapBoxesIndices = [],
+                    children = [],
+                    parentBox,
+                    ids = [inputBox.getID()];
 
-                bufferBoxes = [];
+                box.rect.inflateRect(BUFFER);
 
-                while( i-- ){
-                    rect = new ArRect(boxes[i].getRect());
-                    rect.inflateRect(BUFFER);
-                    box = { "rect": rect, "id": boxes[i].getID() };
+                while(i--){
+                    if(!box.rect.touching( bufferBoxes[i].box ))
+                        continue;
 
-                    while( collection[++k] && collection[k].rect.left < box.rect.left); //Get index for insertion
-                    collection.splice( k, 0, box);
-                    k = -1;
-                }
+                    var j = bufferBoxes[i].children.length;
+                    while(j--){
+                        var child = bufferBoxes[i].children[j];
+                        if(box.rect.touching( child )){
+                            inputBox.adjustPortAvailability(child);
+                            boxes[child.id].adjustPortAvailability(box.rect);
 
-                var groups = []; //Groups will contain grouped boxes by overlap
-                i = 0;
-
-                while( i < collection.length ){ //Adding element 'i' to the appropriate group
-                    var overlaps = [];
-                    j = 0;
-
-                    while( j < groups.length ){ //Check all groups for intersection
-                            var k = 0;
-
-                            while( k < groups[j].length ){ //Check all boxes in the given group
-
-                                if( groups[j][k] && !groups[j][k].rect.intersect( collection[i].rect ).isRectEmpty() ){
-                                    //groups[j].push( collection[i] );
-                                    overlaps.push(j);
-                                    break;
-
-                                }
-                                k++;
-                            }
-                        j++;
-                    }
-
-                    //Combine all intersectings groups into one
-
-                    if( overlaps.length > 0 ){
-                        var n = overlaps.length,
-                            group = [];
-
-                        //Move all overlapping groups to group
-                        while( n-- ){
-                            group = group.concat(groups.splice( overlaps[n], 1)[0]);
+                            if(overlapBoxesIndices.indexOf(i) === -1)
+                                overlapBoxesIndices.push(i);
                         }
-                        group.push( collection[i] );
-                        groups.push(group);
-                    }else{
-                        groups.push( [ collection[i] ] );
+                            
                     }
-
-                    i++;
                 }
 
-                //Now to create the parent objects and add them to the bufferBoxes
-                i = 0;
-                while( i < groups.length ){
-                    var k = 0,
-                        parentBox = new ArRect( groups[i][0].rect );
+                if(overlapBoxesIndices.length !== 0){
+                    //Now overlapBoxes contains all the boxes overlapping with the box to be added
+                    i = -1;
+                    parentBox = new ArRect(box.rect);
 
-                    while( k < groups[i].length ){
-                        parentBox.unionAssign( groups[i][k].rect ); //Creating Parent Box
-                        box2bufferBox[groups[i][k].id] = bufferBoxes.length;// match the box id with bufferbox index
-                        groups[i][k] = groups[i][k].rect;
-                        k++;
+                    while(++i < overlapBoxesIndices.length){
+                        assert(overlapBoxesIndices[i] < bufferBoxes.length, "ArGraph.addToBufferBoxes: overlapBoxes index out of bounds.");
+                        var bufferBox = bufferBoxes.splice(overlapBoxesIndices[i], 1)[0];
+                        j = bufferBox.children.length;
+
+                        while(j--){
+                            children.push(bufferBox.children[j]);
+                            ids.push(bufferBox.children[j].id);//Store the ids of the children that need to be adjusted
+                        }
+
+                        parentBox.unionAssign(bufferBox.box);
+                    }
+                }else{
+                    parentBox = box.rect;
+                }
+
+                box.rect.id = inputBox.getID();
+                children.push(box.rect);
+
+                bufferBoxes.push( { "box": parentBox, "children": children });
+                i = ids.length;
+                while(i--){
+                    box2bufferBox[ids[i]] = bufferBoxes[bufferBoxes.length-1];
+                }
+
+            }
+
+            function removeFromBufferBoxes(box){
+                //Get the children of the parentBox (not including the box to remove)
+                //Create bufferboxes from these children
+                var bufferBox = box2bufferBox[box.getID()],
+                    i = bufferBoxes.indexOf(bufferBox),
+                    children = bufferBox.children,
+                    groups = [];
+
+                assert(i !== -1, "ARGraph.removeFromBufferBoxes: Can't find the correct bufferbox.");
+                
+                bufferBoxes.splice(i, 1);//Remove the bufferBox from bufferBoxes
+
+                //Create groups of overlap from children
+                i = children.length;
+                while(i--){
+                    var g = groups.length,
+                        child = children[i],
+                        group = [child],
+                        add = false;
+
+                    boxes[child.id].resetPortAvailability();//Reset box's ports availableAreas
+
+                    if(child.id === box.getID())
+                        continue;
+
+                    while(g--){
+                        var j = groups[g].length;
+
+                        while(j--){
+                            if(groups[g][j].touching( child )){
+                                boxes[child.id].adjustPortAvailability(groups[g][j]);
+                                boxes[groups[g][j].id].adjustPortAvailability(child);
+                                add = true;
+                            }
+                        }
+
+                        if(add)
+                            group = group.concat(groups.splice(g, 1)[0]);//group will accumulate all things overlapping the child
+                    }
+
+                    groups.push(group); //Add group to groups
+                }
+
+                i = groups.length;
+                while(i--){
+                    var j = groups[i].length,
+                        parentBox = new ArRect(groups[i][0]),
+                        ids = [];
+
+                    while(j--){
+                        parentBox.unionAssign(groups[i][j]);
+                        ids.push(groups[i][j].id);
                     }
 
                     bufferBoxes.push( { "box": parentBox, "children": groups[i] });
-                    i++;
-                }
 
-                for( var id in box2bufferBox ){ //change the indices to bufferbox elements 
-                    box2bufferBox[id] = bufferBoxes[ box2bufferBox[id] ];
+                    j = ids.length;
+                    while(j--){
+                        box2bufferBox[ids[j]] = bufferBoxes[bufferBoxes.length-1];
+                    }
                 }
 
             }
@@ -5707,15 +5981,23 @@ if(DEBUG && ArPointList.length > 0){
                 disconnectPathsClipping(rect);
 
                 box.setOwner(this);
-                var boxId = boxes.length.toString();
+                var boxId = getBoxCount().toString();
                 while( boxId.length < 6 ){
                     boxId = "0" + boxId;
                 }
-                box.setID("BOX_" + boxId);
+                boxId = "BOX_" + boxId;
+                box.setID(boxId);
 
-                boxes.push(box);
+                boxes[boxId] = box;
 
                 addBoxAndPortEdges(box);
+
+                //add children of the box
+                var children = box.getChildren(),
+                    i = children.length;
+                while(i--){
+                    this.addBox(children[i]);
+                }
             };
 
             this.deleteBox = function(box){
@@ -5725,6 +6007,18 @@ if(DEBUG && ArPointList.length > 0){
 
                 if( box.hasOwner() )
                 {
+                    var mother = box.getParent(),
+                        children = box.getChildren(),
+                        i = children.length;
+
+                    //notify the mother of the deletion
+                    if(mother)
+                        mother.removeChild(box);
+
+                    //remove children
+                    while(i--){
+                        this.deleteBox(children[i]);
+                    }
                     remove(box);
                 }
                 
@@ -5733,14 +6027,17 @@ if(DEBUG && ArPointList.length > 0){
             };
 
             this.shiftBoxBy = function(box, offset){
-                assert(box != null, "ARGraph.shiftBoxBy: box != null FAILED");
+                assert(box !== null, "ARGraph.shiftBoxBy: box != null FAILED");
                 if (box === null)
                     return;
 
-                deleteBoxAndPortEdges(box);
+                var rect = box2bufferBox[box.getID()].box,
+                    children = box.getChildren(),
+                    i = children.length;
 
-                var rect = box2bufferBox[box.getID()].box; 
                 disconnectPathsClipping(rect); //redraw all paths clipping parent box.
+
+                deleteBoxAndPortEdges(box);
 
                 box.shiftBy(offset);
                 addBoxAndPortEdges(box);
@@ -5748,6 +6045,10 @@ if(DEBUG && ArPointList.length > 0){
                 rect = box.getRect();
                 disconnectPathsClipping(rect);
                 disconnectPathsFrom(box);
+
+                while(i--){
+                    this.shiftBoxBy(children[i], offset);
+                }
             };
 
             this.setBoxRect = function(box, rect){
@@ -5762,7 +6063,6 @@ if(DEBUG && ArPointList.length > 0){
             };
 
             this.autoRoute = function(){
-                createBufferBoxes(); 
                 connectAllDisconnectedPaths();
 
                 var updated = 0,
@@ -5915,28 +6215,27 @@ if(DEBUG && ArPointList.length > 0){
                 }
 
                 // Check customized connection if there's any clip against boxes
+                var pathiter = 0;
+
+                //		HRESULT hr = S_OK;
+                while (pathiter < paths.length)
                 {
-                    var pathiter = 0;
+                    var path = paths[pathiter];
 
-            //		HRESULT hr = S_OK;
-                    while (pathiter < paths.length)
-                    {
-                        var path = paths[pathiter];
+                    if (path.isAutoRouted()) {	// comment this if you want the check to run for fully customizable connections
 
-                        if (path.isAutoRouted()) {	// comment this if you want the check to run for fully customizable connections
+                        if (path.areTherePathCustomizations())
+                        {
+                            var startBoxRect = path.getStartBox(),
+                                endBoxRect = path.getEndBox(),
 
-                            if (path.areTherePathCustomizations())
-                            {
-                                var startBoxRect = path.getStartBox(),
-                                    endBoxRect = path.getEndBox(),
+                                boxiter = 0;
 
-                                    boxiter = 0;
-
-                                while (boxiter < boxes.length)
-                                {
-                                    var boxRect = boxes[boxiter].getRect(),
+                            for(var box in boxes){
+                                if(boxes.hasOwnProperty(box)){
+                                    var boxRect = boxes[box].getRect(),
                                         isStartOrEndRect = (!startBoxRect.isRectEmpty() && isRectIn(startBoxRect, boxRect) ||
-                                                             !endBoxRect.isRectEmpty() && isRectIn(endBoxRect, boxRect));
+                                                !endBoxRect.isRectEmpty() && isRectIn(endBoxRect, boxRect));
 
                                     if (path.isPathClip(boxRect, isStartOrEndRect))
                                     {
@@ -5944,13 +6243,11 @@ if(DEBUG && ArPointList.length > 0){
                                         updated = -2;
                                     }
 
-                                    ++boxiter;
                                 }
                             }
                         }
-
-                        pathiter++;
                     }
+                    pathiter++;
                 }
 
                 _logger.info("c has been decremented " + (100 - c) + " times\nlast is " + last + 
@@ -5971,7 +6268,6 @@ if(DEBUG && ArPointList.length > 0){
                 }
 
                 path.destroy();
-                path = null;
             };
 
             this.deleteAll = function(addBackSelfEdges){
@@ -5998,12 +6294,12 @@ if(DEBUG && ArPointList.length > 0){
                 return null;
             };
 
-            this.addPath = function(isAutoRouted, startport, endport){
+            this.addPath = function(isAutoRouted, startports, endports){
                 var path = new AutoRouterPath();
 
                 path.setAutoRouting(isAutoRouted);
-                path.setStartPort(startport);
-                path.setEndPort(endport);
+                path.setStartPorts(startports);
+                path.setEndPorts(endports);
                 add(path);
 
                 return path;
@@ -6033,18 +6329,18 @@ if(DEBUG && ArPointList.length > 0){
             this.assertValid = function(){
                 var iter = 0;
 
-                while (iter < boxes.length)
-                {
-                    assertValidBox(boxes[iter]);
-                    ++iter;
+                for(var box in boxes){
+                    if(boxes.hasOwnProperty(box)){
+                        assertValidBox(boxes[box]);
+                    }
                 }
 
-                var iter2 = 0;
+                var i = 0;
                 
-                while(iter2 < paths.length)
+                while(i < paths.length)
                 {
-                    assertValidPath(paths[iter2]);
-                    ++iter2;
+                    assertValidPath(paths[i]);
+                    ++i;
                 }
             };
 
@@ -6052,8 +6348,7 @@ if(DEBUG && ArPointList.length > 0){
                 box.assertValid();
                 assert( box.getOwner().equals(this), "ARGraph.assertValidBox: box.getOwner().equals(this) FAILED");
 
-                var iter = boxes.indexOf(box);
-                assert (iter != -1, "ARGraph.assertValidBox: iter != -1 FAILED");
+                assert (boxes[box.getID()] !== undefined, "ARGraph.assertValidBox: boxes[box.getID()] !== undefined FAILED");
             };
 
             this.assertValidPath = function(path){
@@ -6128,14 +6423,11 @@ if(DEBUG && ArPointList.length > 0){
                     i++;
                 }
 
-                dumpEdgeLists();
             };
 
             this.dumpEdgeLists = function(){
-                if(DEBUG_DEEP){
-                    horizontal.dumpEdges("Horizontal edges:");
-                    vertical.dumpEdges("Vertical edges:");
-                }
+                horizontal.dumpEdges("Horizontal edges:");
+                vertical.dumpEdges("Vertical edges:");
             };
 
             // AutoRouterGraph
@@ -6143,18 +6435,19 @@ if(DEBUG && ArPointList.length > 0){
 
     var AutoRouterPath = function (){
             var owner = null,
-                
+                startpoint,
+                endpoint,
+                startports,
+                endports,
                 startport = null,
                 endport = null,
-
                 attributes = ARPATH_Default,
                 state = ARPATHST_Default,
                 isAutoRoutingOn = true,
                 customPathData = [],
                 customizationType = "Points",
                 pathDataToDelete = [],
-                points = new ArPointListPath(),
-                self = this;
+                points = new ArPointListPath();
 
             //Functions
 
@@ -6211,12 +6504,18 @@ if(DEBUG && ArPointList.length > 0){
                 owner = newOwner;
             };
 
-            this.setStartPort = function(newPort){
-                startport = newPort;
+            this.setStartPorts = function(newPorts){
+                startports = newPorts;
+
+                if(startport)
+                    this.calculateStartPorts();
             };
 
-            this.setEndPort = function(newPort){
-                endport = newPort;
+            this.setEndPorts = function(newPorts){
+                endports = newPorts;
+
+                if(endport)
+                    this.calculateEndPorts();
             };
 
             this.clearPorts = function(){
@@ -6225,10 +6524,163 @@ if(DEBUG && ArPointList.length > 0){
             };
 
             this.getStartPort = function(){
-                return startport;
+                assert(startports.length, "ARPort.getStartPort: Can't retrieve start port.");
+                return startport || startports[0];
             };
 
             this.getEndPort = function(){
+                assert(endports.length, "ARPort.getEndPort: Can't retrieve end port.");
+                return endport || endports[0];
+            };
+
+            this.getStartPorts = function(){
+                return startports;
+            };
+
+            this.getEndPorts = function(){
+                return endports;
+            };
+
+            this.calculateStartEndPorts = function(){
+                return {'src': this.calculateStartPorts(), 'dst': this.calculateEndPorts() };
+            };
+
+            this.calculateStartPorts = function(){
+                var srcPorts = [],
+                    tgt,
+                    i = startports.length,
+                    result = null;
+
+                assert(startports.length > 0, "ArPath.calculateStartEndPorts: startports cannot be empty!");
+
+                //Remove startpoint
+                if(startport && startport.hasPoint(startpoint))
+                    startport.removePoint(startpoint);
+
+                //Get available ports
+                while(i--){
+                    assert(startports[i].getOwner(), "ARPath.calculateStartEndPorts: startport has invalid owner!");
+                    if(startports[i].isAvailable())
+                        srcPorts.push(startports[i]);
+                }
+
+                if(srcPorts.length === 0)
+                    srcPorts = startports;
+
+                //Preventing same start/endport
+                if(endport && srcPorts.length > 1){
+                    i = srcPorts.length;
+                    while(i--){
+                        if(srcPorts[i] === endport)
+                            srcPorts.splice(i, 1);
+                    }
+                }
+
+
+                //Getting target
+                if(customPathData.length){
+                    tgt = new ArPoint(customPathData[0].getX(), customPathData[0].getY());
+                }else{
+                    var x = 0,
+                        y = 0;
+
+                    i = endports.length;
+                    while(i--){
+                        var pt = endports[i].getRect().getCenter();
+                        x += pt.x;
+                        y += pt.y;
+                    }
+                    tgt = new ArPoint(x/endports.length, y/endports.length);
+                }
+
+                //Get the optimal port to the target
+                startport = getOptimalPorts(srcPorts, tgt);
+
+                //Create a startpoint at the port
+                var startdir = this.getStartDir(),
+                    startportHasLimited = false,
+                    startportCanHave = true;
+
+                if (startdir !== Dir_None) {
+                    startportHasLimited = startport.hasLimitedDirs();
+                    startportCanHave = startport.canHaveStartEndPointOn(startdir, true);
+                }
+                if( startdir === Dir_None ||							// recalc startdir if empty
+                        startportHasLimited && !startportCanHave){		// or is limited and userpref is invalid
+                    startdir = startport.getStartEndDirTo(tgt, true);
+                }
+
+                startpoint = startport.createStartEndPointTo(tgt, startdir);
+                return startport;
+            };
+
+            this.calculateEndPorts = function(){
+                var dstPorts = [],
+                    tgt,
+                    i = endports.length,
+                    result = null;
+
+                assert(endports.length > 0, "ArPath.calculateStartEndPorts: endports cannot be empty!");
+
+                //Remove old endpoint
+                if(endport && endport.hasPoint(endpoint))
+                    endport.removePoint(endpoint);
+
+                //Get available ports
+                while(i--){
+                    assert(endports[i].getOwner(), "ARPath.calculateStartEndPorts: endport has invalid owner!");
+                    if(endports[i].isAvailable())
+                        dstPorts.push(endports[i]);
+                }
+
+                if(dstPorts.length === 0)
+                    dstPorts = endports;
+
+                //Preventing same start/endport
+                if(startport && dstPorts.length > 1){
+                    i = dstPorts.length;
+                    while(i--){
+                        if(dstPorts[i] === startport)
+                            dstPorts.splice(i, 1);
+                    }
+                }
+
+                //Getting target
+                if(customPathData.length){
+                    i = customPathData.length - 1;
+                    tgt = new ArPoint(customPathData[i].getX(), customPathData[i].getY());
+                }else{
+                    var x = 0,
+                        y = 0;
+
+                    i = startports.length;
+                    while(i--){
+                        var pt = startports[i].getRect().getCenter();
+                        x += pt.x;
+                        y += pt.y;
+                    }
+                    tgt = new ArPoint(x/startports.length, y/startports.length);
+                }
+
+                //Get the optimal port to the target
+                endport = getOptimalPorts(dstPorts, tgt);
+
+                //Create endpoint at the port
+                var enddir = this.getEndDir(),
+                    startdir = this.getStartDir(),
+                    endportHasLimited = false,
+                    endportCanHave = true;
+
+                if (enddir !== Dir_None) {
+                    endportHasLimited = endport.hasLimitedDirs();
+                    endportCanHave = endport.canHaveStartEndPointOn(enddir, false);
+                }
+                if( enddir === Dir_None ||							// like above
+                        endportHasLimited && !endportCanHave){
+                    enddir = endport.getStartEndDirTo(tgt, false, startport === endport ? startdir : Dir_None );
+                }
+
+                endpoint = endport.createStartEndPointTo(tgt, enddir);
                 return endport;
             };
 
@@ -6238,9 +6690,9 @@ if(DEBUG && ArPointList.length > 0){
 
             this.addTail = function(pt){
                 assert( !this.isConnected(), "ARPath.addTail: !this.isConnected() FAILED");
-if(!(pt instanceof Array)){
-pt = [pt];
-}
+                if(!(pt instanceof Array)){
+                    pt = [pt];
+                }
                 points.push(pt);
             };
 
@@ -6258,13 +6710,18 @@ pt = [pt];
             };
 
             this.getStartPoint = function(){
-                assert( points.getLength() >= 2, "ARPath.getStartPoint: points.getLength() >= 2 FAILED");
-                return points.get(0)[0];
+                //assert( points.getLength() >= 2, "ARPath.getStartPoint: points.getLength() >= 2 FAILED");
+                if(points.getLength())
+                    assert(startpoint === points.get(0)[0], "ARPath.getEndPoint: startpoint === points.get(0)[0] FAILED");
+
+                return startpoint;
             };
 
             this.getEndPoint = function(){
-                assert( points.getLength() >= 2, "ARPath.getEndPoint: points.getLength() >= 2 FAILED");
-                return points.get(points.getLength() - 1)[0];
+                if(points.getLength())
+                    assert(endpoint === points.get(points.getLength() - 1)[0], "ARPath.getEndPoint: endpoint === points.get(points.getLength() - 1)[0] FAILED");
+
+                return endpoint;
             };
 
             this.getStartBox = function(){
@@ -6565,9 +7022,9 @@ pt = [pt];
                 }
 
                 var currEdgeIndex = 0,
-                    tmp = points.getHeadEdgePtrs(startpoint, endpoint),
-                    endpoint = tmp.end,
-                    startpoint = tmp.start,
+                    tmp = points.getHeadEdgePtrs(),
+                    end = tmp.end,
+                    start = tmp.start,
                     pos = tmp.pos;
 
                 while (pos < points.getLength()){
@@ -6576,7 +7033,7 @@ pt = [pt];
                         var increment = true;
                         if (currEdgeIndex === (customPathData[ii]).getEdgeIndex()) {
                             if ((customPathData[ii]).getType() === SimpleEdgeDisplacement) {
-                                var dir = getDir(endpoint.minus(startpoint)),
+                                var dir = getDir(end.minus(start)),
                                     isHorizontalVar = (isHorizontal(dir) != 0),
                                     doNotApply = false;
                                 if ((customPathData[ii]).isHorizontalOrVertical() === isHorizontalVar) {
@@ -6599,11 +7056,11 @@ pt = [pt];
                                     }
                                     if (!doNotApply) {
                                         if ((customPathData[ii]).isHorizontalOrVertical()) {
-                                            startpoint.y = yToSet;
-                                            endpoint.y = yToSet;
+                                            start.y = yToSet;
+                                            end.y = yToSet;
                                         } else {
-                                            startpoint.x = xToSet;
-                                            endpoint.x = xToSet;
+                                            start.x = xToSet;
+                                            end.x = xToSet;
                                         }
                                     }
                                 }
@@ -6620,10 +7077,10 @@ pt = [pt];
                             ++ii;
                     }
 
-                    var tmp = points.getNextEdgePtrs(pos, startpoint, endpoint);
+                    var tmp = points.getNextEdgePtrs(pos, start, end);
                     pos = tmp.pos; 
-                    startpoint = tmp.start;
-                    endpoint = tmp.end;
+                    start = tmp.start;
+                    end = tmp.end;
 
                     currEdgeIndex++;
                 }
@@ -6706,11 +7163,11 @@ pt = [pt];
             };
 
             this.destroy = function(){
-                this.getStartPort().removePoint(this.getStartPoint());
-                this.getEndPort().removePoint(this.getEndPoint());
+                if( this.isConnected() ){
+                    this.getStartPort().removePoint(this.getStartPoint());
+                    this.getEndPort().removePoint(this.getEndPoint());
+                }
 
-                this.setStartPort(null);
-                this.setEndPort(null);
             };
 
             this.getExtPtr = function(){
@@ -6728,14 +7185,20 @@ pt = [pt];
                 if( endport !== null )
                     endport.assertValid();
 
-                if( isConnected() )
+                if( isConnected() ){
                     assert( points.getLength() !== 0, "ARPath.assertValid: points.getLength() !== 0 FAILED" );
-                else
-                    assert( points.getLength() === 0, "ARPath.assertValid: points.getLength() === 0 FAILED");
-            };
+                    var i = 0;
+                    while(i++ < this.getPointCount()){
+                        var point = this.getPointList().get(i)[0],
+                            ppoint = this.getPointList().get(i-1)[0];
 
-            this.assertValidPos = function(pos){
-                return pos < points.getLength();
+                        if(point.x !== ppoint.x && point.y !== ppoint.y)
+                            assert(false, "Path.assertValid: Path is not valid");
+                    }
+                
+                }else{
+                    assert( points.getLength() === 0, "ARPath.assertValid: points.getLength() === 0 FAILED");
+                }
             };
 
             this.assertValidPoints = function(){
@@ -6745,11 +7208,12 @@ pt = [pt];
 
         var AutoRouterPort = function (){
             var owner = null,
-            limitedDirections = false,
-            rect = new ArRect(),
-            attributes = ARPORT_Default,
-            points = [ [], [], [], [] ],//For points on Dir_Top, Dir_Left, Dir_Right, etc
-            selfPoints = [];
+                limitedDirections = true,
+                rect = new ArRect(),
+                attributes = ARPORT_Default,
+                points = [ [], [], [], [] ],//For points on Dir_Top, Dir_Left, Dir_Right, etc
+                selfPoints = [],
+                availableArea = [];//availableAreas keeps track of visible (not overlapped) portions of the port
 
             calculateSelfPoints();
 
@@ -6787,14 +7251,23 @@ pt = [pt];
             this.createStartEndPointTo = createStartEndPointTo;
             this.createStartEndPointOn = createStartEndPointOn;
             this.removePoint = removePoint;
+            this.getPoints = getPoints;
+            this.getPointCount = getPointCount;
+
+            //AvailableAreas Methods
+            this.isAvailable = isAvailable;
+            this.resetAvailableArea = resetAvailableArea;
+            this.adjustAvailableArea = adjustAvailableArea;
+            this.getTotalAvailableArea = getTotalAvailableArea;
 
             function calculateSelfPoints(){
                 selfPoints = [];
                 selfPoints.push(new ArPoint(rect.getTopLeft()));
 
-                selfPoints.push(new ArPoint( rect.right - 1, rect.ceil));
-                selfPoints.push(new ArPoint(rect.right - 1, rect.floor - 1));
-                selfPoints.push(new ArPoint(rect.left, rect.floor - 1));
+                selfPoints.push(new ArPoint( rect.right, rect.ceil));
+                selfPoints.push(new ArPoint(rect.right, rect.floor));
+                selfPoints.push(new ArPoint(rect.left, rect.floor));
+                resetAvailableArea();
             }
 
             function destroy(){
@@ -6830,6 +7303,7 @@ pt = [pt];
                     
                 rect.assign(r);
                 calculateSelfPoints();
+                resetAvailableArea();
             }
 
             function shiftBy(offset){
@@ -6886,7 +7360,7 @@ pt = [pt];
                 if( isStart)
                     dir += 4;
 
-                return ((attributes & (1 << dir)) != 0); //NOTE: I think JS supports bitwise shift left operator <<
+                return ((attributes & (1 << dir)) != 0); 
             }
 
             function canHaveStartEndPoint(isStart){
@@ -6951,16 +7425,16 @@ pt = [pt];
                     nearest = new ArFindNearestLine(point),
                     canHave = false;
             
-                if(this.canHaveStartEndPointOn(Dir_Top, isStart) && nearest.HLine(rect.left, rect.right - 1, rect.ceil))
+                if(this.canHaveStartEndPointOn(Dir_Top, isStart) && nearest.HLine(rect.left, rect.right, rect.ceil))
                     dir = Dir_Top;
 
-                if(this.canHaveStartEndPointOn(Dir_Right, isStart) && nearest.VLine(rect.ceil, rect.floor - 1, rect.right - 1))
+                if(this.canHaveStartEndPointOn(Dir_Right, isStart) && nearest.VLine(rect.ceil, rect.floor, rect.right))
                     dir = Dir_Right;
 
-                if(this.canHaveStartEndPointOn(Dir_Bottom, isStart) && nearest.HLine(rect.left, rect.right - 1, rect.floor - 1))
+                if(this.canHaveStartEndPointOn(Dir_Bottom, isStart) && nearest.HLine(rect.left, rect.right, rect.floor))
                     dir = Dir_Bottom;
 
-                if(this.canHaveStartEndPointOn(Dir_Left, isStart) && nearest.VLine(rect.ceil, rect.floor - 1, rect.left ))
+                if(this.canHaveStartEndPointOn(Dir_Left, isStart) && nearest.VLine(rect.ceil, rect.floor, rect.left ))
                     dir = Dir_Left;
                 
                 assert(isRightAngle(dir), "ArPort.createStartEndPointAt: isRightAngle(dir) FAILED!");
@@ -6971,7 +7445,7 @@ pt = [pt];
                 if( point.x < rect.left )
                     point.x = rect.left;
                 else if(rect.right <= point.x)
-                    points.x = rect.right - 1;
+                    point.x = rect.right;
 
                 if( point.y < rect.ceil )
                     point.y = rect.ceil;
@@ -6985,11 +7459,11 @@ pt = [pt];
                     break;  
 
                 case Dir_Right:
-                    point.x = rect.right - 1;
+                    point.x = rect.right;
                     break;
                 
                 case Dir_Bottom:
-                    point.y = rect.floor - 1;
+                    point.y = rect.floor;
                     break;
 
                 case Dir_Left:
@@ -7002,8 +7476,8 @@ pt = [pt];
 
             function roundToHalfGrid(left, right){
                 // I added a checking condition to make sure that the rounding will not yield a value outside of the left, right values
-                var btwn = (left + right - 1)/2;//btwn < Math.max(left, right - 1) && btwn > Math.min(left, right - 1) ? btwn : (left + right - 1)/2;
-                assert(btwn < Math.max(left, right - 1) && btwn > Math.min(left, right - 1), "roundToHalfGrid: btwn variable not between left, right values. Perhaps box/connectionArea is too small?"); 
+                var btwn = (left + right)/2;//btwn < Math.max(left, right) && btwn > Math.min(left, right) ? btwn : (left + right)/2;
+                assert(btwn < Math.max(left, right) && btwn > Math.min(left, right), "roundToHalfGrid: btwn variable not between left, right values. Perhaps box/connectionArea is too small?"); 
                 return btwn;
             }
 
@@ -7018,13 +7492,13 @@ pt = [pt];
                     return new ArPoint(roundToHalfGrid(rect.left, rect.right), rect.ceil);
 
                 case Dir_Bottom:
-                    return new ArPoint(roundToHalfGrid(rect.left, rect.right), rect.floor - 1);
+                    return new ArPoint(roundToHalfGrid(rect.left, rect.right), rect.floor);
 
                 case Dir_Left:
                     return new ArPoint(rect.left, roundToHalfGrid(rect.ceil, rect.floor));
                 }
 
-                return new ArPoint(rect.right - 1, roundToHalfGrid(rect.ceil, rect.floor));
+                return new ArPoint(rect.right, roundToHalfGrid(rect.ceil, rect.floor));
             }
 
             function createStartEndPointTo(point, dir){
@@ -7033,42 +7507,35 @@ pt = [pt];
                     dy = point.y - this.getCenter().y,
                     pathAngle = Math.atan2(-dy, dx),
                     k = 0,
-                    maxX = rect.right - 1,
-                    maxY = rect.floor - 1,
+                    maxX = rect.right - 1,             //This is done to guarantee that the x,y will never round up to the corner of 
+                    maxY = rect.floor - 1,                //the port. If it does, the next assert will fail.
                     minX = rect.left,
                     minY = rect.ceil,
                     resultPoint,
-                    x,
-                    y;
+                    smallerPt = new ArPoint(minX, minY),//The points that the resultPoint is centered between
+                    largerPt = new ArPoint(maxX, maxY);
+
 
                 //Adjust angle based on part of port to which it is connecting
                 switch(dir){
                 
                     case Dir_Top:
                         pathAngle = 2 * Math.PI - (pathAngle + Math.PI/2);
-                        x = roundToHalfGrid(rect.left, rect.right);
-                        y = rect.ceil;
-                        maxY = rect.ceil;
+                        largerPt.y = rect.ceil;
                         break;
 
                     case Dir_Right:
                         pathAngle = 2 * Math.PI - pathAngle;
-                        x = rect.right - 1;
-                        y = roundToHalfGrid(rect.ceil, rect.floor);
-                        minX = rect.right - 1;
+                        smallerPt.x = rect.right;
                         break;
 
                     case Dir_Bottom:
                         pathAngle -= Math.PI/2;
-                        x = roundToHalfGrid(rect.left, rect.right);
-                        y = rect.floor - 1;
-                        minY = rect.floor - 1;
+                        smallerPt.y = rect.floor;
                         break;
 
                     case Dir_Left:
-                        x = rect.left;
-                        y = roundToHalfGrid(rect.ceil, rect.floor);
-                        maxX = rect.left;
+                        largerPt.x = rect.left;
                         break;
                 }
 
@@ -7085,21 +7552,56 @@ pt = [pt];
 
                 if( points[dir].length ){
                     if ( k === 0 ){
-                        x = ( points[dir][k].x + minX )/2;
-                        y = ( points[dir][k].y + minY )/2;
+                        largerPt = new ArPoint(points[dir][k]);
+
                     }else if ( k !== points[dir].length ){
-                        x = ( points[dir][k-1].x + points[dir][k].x )/2;
-                        y = ( points[dir][k-1].y + points[dir][k].y )/2;
+                        smallerPt = new ArPoint(points[dir][k-1]);
+                        largerPt = new ArPoint(points[dir][k]);
+
                     }else{
-                        x = ( points[dir][k-1].x + maxX )/2;
-                        y = ( points[dir][k-1].y + maxY )/2;
+                        smallerPt = new ArPoint(points[dir][k-1]);
+
                     }
                 }
 
-                resultPoint = new ArPoint(x, y);
+                resultPoint = new ArPoint((largerPt.x + smallerPt.x)/2, (largerPt.y + smallerPt.y)/2);
                 resultPoint.pathAngle = pathAngle;
-                points[dir].splice(k, 0, resultPoint);
+
+                //Move the point over to an 'availableArea' if appropriate
+                var i = availableArea.length,
+                    closestArea = 0,
+                    distance = ED_MAXCOORD;
+
+                //Find distance from each availableArea and store closest index
+                while(i--){
+                    var start = availableArea[i][0], 
+                        end = availableArea[i][1];
+
+                    if(isOnEdge(start, end, resultPoint)){
+                        closestArea = -1;
+                        break;
+                    }else if(distanceFromLine(resultPoint, start, end) < distance){
+                        closestArea = i;
+                        distance = distanceFromLine(resultPoint, start, end);
+                    }
+                }
+
+                if(closestArea !== -1 && this.isAvailable()){ //resultPoint needs to be moved to the closest available area
+                    var dir2 = getDir(availableArea[closestArea][0].minus(resultPoint));
+
+                    assert(isRightAngle(dir2), "AutoRouterPort.createStartEndPointTo: isRightAngle(dir2) FAILED");
+
+                    if(dir2 === Dir_Left || dir2 === Dir_Top){ //Then resultPoint must be moved up
+                        largerPt = availableArea[closestArea][1];
+                    }else{ //Then resultPoint must be moved down
+                        smallerPt = availableArea[closestArea][0];
+                    }
+
+                    resultPoint = new ArPoint((largerPt.x + smallerPt.x)/2, (largerPt.y + smallerPt.y)/2);
+                }
                 
+                points[dir].splice(k, 0, resultPoint);
+
                 assert( isRightAngle( this.port_OnWhichEdge(resultPoint) ), "AutoRouterPort.createStartEndPointTo: isRightAngle( this.port_OnWhichEdge(resultPoint) FAILED");
 
                 return resultPoint;
@@ -7120,9 +7622,94 @@ pt = [pt];
                 }
 
                 if( !removed )
-                    _logger.warning("point was not removed from port");
+                    _logger.warning("point (" + pt.x + ", " + pt.y + ") was not removed from port");
             }
-            
+
+            this.hasPoint = function(pt){
+                var i = 0;
+
+                while( i < 4 ){ //Check all sides for the point
+                    var k = points[i].indexOf(pt);
+
+                    if( k > -1){ //If the point is on this side of the port
+                        return true;
+                    }
+                    i++;
+                }
+
+                return false;
+            };
+
+            function getPoints(){
+                return points;
+            }
+
+            function getPointCount(){
+                var i = 0,
+                    count = 0;
+
+                while( i < 4 ){ //Check all sides for the point
+                    count += points[i++].length;
+                }
+
+                return count;
+            }
+
+            function resetAvailableArea(){
+                availableArea = [];
+
+                if(canHaveStartEndPointOn(Dir_Top))
+                    availableArea.push([rect.getTopLeft(),  new ArPoint(rect.right, rect.ceil)]);
+
+                if(canHaveStartEndPointOn(Dir_Right))
+                    availableArea.push([new ArPoint(rect.right, rect.ceil),  rect.getBottomRight()]);
+
+                if(canHaveStartEndPointOn(Dir_Bottom))
+                    availableArea.push([new ArPoint(rect.left, rect.floor),  rect.getBottomRight()]);
+
+                if(canHaveStartEndPointOn(Dir_Left))
+                    availableArea.push([rect.getTopLeft(), new ArPoint(rect.left, rect.floor)]);
+
+            }
+
+            function adjustAvailableArea(r){
+                //For all lines specified in availableAreas, check if the line intersects the rectangle
+                //If it does, remove the part of the line that intersects the rectangle
+                if(!rect.touching(r))
+                    return;
+
+                var i = availableArea.length;
+                while(i--){
+
+                    if(isLineClipRect(availableArea[i][0], availableArea[i][1], r)){
+                        var line = availableArea.splice(i, 1)[0],
+                            intersection = getLineClipRectIntersect(line[0], line[1], r);
+
+                        if(!intersection[0].equals(line[0]))
+                            availableArea.push([ line[0], intersection[0] ]);
+
+                        if(!intersection[1].equals(line[1]))
+                            availableArea.push([ intersection[1], line[1] ]);
+                    }
+                }
+            }
+
+            function getTotalAvailableArea(){
+                var i = availableArea.length,
+                    length = new ArSize(); 
+
+                while(i--){
+                    length.add(availableArea[i][1].minus(availableArea[i][0]));
+                }
+
+                assert(length.cx === 0 || length.cy === 0, "ARPort.getTotalAvailableArea: length[0] === 0 || length[1] === 0 FAILED");
+                return length.cx || length.cy;
+            }
+
+            function isAvailable(){
+                return availableArea.length > 0;
+            }   
+
         };
 
         var ArBoxObject = function(b, p){
@@ -7131,13 +7718,102 @@ pt = [pt];
             this.ports = p;
         };
 
+        var ArPathObject = function(i, p, s, d){
+            //Stores a path with ports used 
+            this.id = i;
+            this.path = p;
+            
+            var srcPorts = s,
+                dstPorts = d,
+                srcBox = calcBoxId(s),
+                dstBox = calcBoxId(d);
+
+            function calcBoxId(ports){
+                for(var i in ports){
+                    if(ports.hasOwnProperty(i) && ports[i].getOwner()){
+                        return ports[i].getOwner().getID();
+                    }
+                }
+            }
+
+            this.getSrcPorts = function(){
+                return srcPorts;
+            };
+
+            this.getDstPorts = function(){
+                return dstPorts;
+            };
+
+            this.setSrcPort = function(index, port){
+                assert(port instanceof AutoRouterPort, "ArPathObject.setSrcPort: port instanceof AutoRouterPort FAILED");
+                srcPorts[index] = port;
+            };
+
+            this.setDstPort = function(index, port){
+                assert(port instanceof AutoRouterPort, "ArPathObject.setDstPort: port instanceof AutoRouterPort FAILED");
+                dstPorts[index] = port;
+            };
+
+            this.setSrcPorts = function(s){
+                srcPorts = s;
+            };
+
+            this.setDstPorts = function(s){
+                dstPorts = s;
+            };
+
+            this.deleteSrcPort = function(index){
+                delete srcPorts[index];
+            };
+
+            this.deleteDstPort = function(index){
+                delete dstPorts[index];
+            };
+
+            this.getSrcBoxId = function(){
+                if(srcPorts && calcBoxId(srcPorts))
+                    return srcBox;
+                return null;
+            };
+
+            this.getDstBoxId = function(){
+                if(dstPorts && calcBoxId(dstPorts))
+                    return dstBox;
+                return null;
+            };
+
+            this.updateSrcPorts = function(){
+                var src = [];
+
+                for(var i in srcPorts){
+                    if(srcPorts.hasOwnProperty(i))
+                        assert( srcPorts[i] instanceof AutoRouterPort, "ArPathObject.updateSrcPorts: srcPorts[i] instanceof AutoRouterPort FAILED");
+                        src.push(srcPorts[i]);
+                }
+
+                this.path.setStartPorts(src);
+                srcBox = calcBoxId(srcPorts);
+            };
+
+            this.updateDstPorts = function(){
+                var dst = [];
+
+                for(var i in dstPorts){
+                    if(dstPorts.hasOwnProperty(i))
+                        assert( dstPorts[i] instanceof AutoRouterPort, "ArPathObject.updateDstPorts: dstPorts[i] instanceof AutoRouterPort FAILED");
+                        dst.push(dstPorts[i]);
+                }
+
+                this.path.setEndPorts(dst);
+                dstBox = calcBoxId(dstPorts);
+            };
+        };
+
         AutoRouter.prototype.clear = function(){
             this.router.deleteAll(true);
-            this.boxes = [];
-            this.bufferBoxes = []; //Used for covering general off-limits areas in original path finding
-            this.ports = [];
-            this.paths = [];
+            this.paths = {};
             this.boxId2Path = {};
+            this.pCount = 0;
         };
 
         AutoRouter.prototype.destroy = function(){
@@ -7155,7 +7831,7 @@ pt = [pt];
                 x2 = size.x2 !== undefined ? size.x2 : (size.x1 + size.width),
                 y1 = size.y1 !== undefined ? size.y1 : (size.y2 - size.height),
                 y2 = size.y2 !== undefined ? size.y2 : (size.y1 + size.height),
-                connAreas = size.ConnectionAreas,
+                connInfo = size.ConnectionInfo,
                 box = this.router.createBox(),
                 rect = new ArRect(x1, y1, x2, y2),
                 p = [],
@@ -7165,10 +7841,10 @@ pt = [pt];
             box.setRect(rect);
 
             //Adding connection port
-            p = this.addPort(box, connAreas);
+            p = this.addPort(box, connInfo);
 
             this.router.addBox(box);
-            this.boxes.push(box);
+            //this.boxes[box.getID()] = box;
             this.boxId2Path[ box.getID() ] = { 'in': [], 'out': [] };
 
             return new ArBoxObject(box, p);
@@ -7180,7 +7856,7 @@ pt = [pt];
             box = box instanceof ArBoxObject ? box.box : box;
             var port,
                 r,
-                p = [],
+                p = {},
                 x1 = box.getRect().left,
                 y1 = box.getRect().ceil,
                 x2 = box.getRect().right,
@@ -7197,7 +7873,7 @@ pt = [pt];
 
                 port.setAttributes(ARPORT_ConnectOnAll);
 
-                p.push(port);
+                p['0'] = port;
             }else{ 
             //A connection area is specified
             /* There are a couple possibilities here:
@@ -7220,26 +7896,24 @@ pt = [pt];
              * is clumsy. It isn't too bad unless you try to 
              * set specific attributes.
              *
-             *
              */
 
                 if(!(connAreas instanceof Array))
                     connAreas = [connAreas];
 
                 connAreas.forEach(function (connData, i, list){
-                        var attr = 0,
+                        var id = connData.id,
+                            angles = connData.angles, //Incoming angles. If defined, it will set attr at the end
+                            attr = 0, //Set by angles. Defaults to guessing by location if angles undefined
                             type = "any", //Specify start, end, or any --Not fully implemented
                             j = 0,
                             port = box.createPort(),
-                            connArea = connData instanceof Array ? 
-                                    [ connData ] : //Line
+                            connArea = connData.area instanceof Array ? 
+                                    [ connData.area ] : //Line
                                     [ connData.any, connData.in || connData.incoming, connData.out || connData.outgoing ];
-
-
 
                         do
                         {
-                            
                                 
                             if(connArea[j] instanceof Array){ 
                                 var isStart = 17,
@@ -7370,6 +8044,30 @@ pt = [pt];
 
                                 assert(x1 < arx1 && y1 < ary1 && x2 > arx2 && y2 > ary2, "AutoRouter.addBox Cannot add port outside of the box");
                                 r = new ArRect(arx1, ary1, arx2, ary2); 
+
+                                //If 'angles' is defined, I will use it to set attr
+                                if(angles){
+                                    var a1 = angles[0], //min angle
+                                        a2 = angles[1], //max angle
+                                        rightAngle = 0,
+                                        bottomAngle = 90,
+                                        leftAngle = 180,
+                                        topAngle = 270;
+
+                                    attr = 0; //Throw away our guess of attr
+
+                                    if( rightAngle >= a1 && rightAngle <= a2 )
+                                        attr += ARPORT_StartOnRight + ARPORT_EndOnRight;
+
+                                    if( topAngle >= a1 && topAngle <= a2 )
+                                        attr += ARPORT_StartOnTop + ARPORT_EndOnTop;
+
+                                    if( leftAngle >= a1 && leftAngle <= a2 )
+                                        attr += ARPORT_StartOnLeft + ARPORT_EndOnLeft;
+
+                                    if( bottomAngle >= a1 && bottomAngle <= a2 )
+                                        attr += ARPORT_StartOnBottom + ARPORT_EndOnBottom;
+                                }
                 
                             }else if(typeof connArea[j] === "string") //Using words to designate connection area
                             {
@@ -7395,10 +8093,11 @@ pt = [pt];
                             if(connArea[j])
                             {
                                 port.setLimitedDirs(false);
+                                port.setAttributes(attr);
                                 port.setRect(r);
                                 box.addPort(port);
-                                port.setAttributes(attr);
-                                p.push(port);
+                                //p.push(port);
+                                p[id] = port;
                             }
 
                         }while(++j < connArea.length);
@@ -7412,102 +8111,53 @@ pt = [pt];
             return p;
         };
 
-        AutoRouter.prototype._getClosestPorts = function(srcPorts, dstPorts, segmentPoints){
-        var i,
-            j,
-            dx,
-            dy,
-            srcP,
-            dstP,
-            minLength = -1,
-            srcConnectionPoints = [],
-            dstConnectionPoints = [],
-            cLength;
+    AutoRouter.prototype.addPath = function(a){
+        //Assign a pathId to the path (return this id).
+        //If there is only one possible path connection, create the path.
+        //if not, store the path info in the pathsToResolve array
+        var src = a.src, 
+            dst = a.dst, 
+            pathId = (this.pCount++).toString();
 
-        //Make sure srcPorts, dstPorts are arrays of ports
-        if( srcPorts instanceof AutoRouterBox )
-            srcPorts = srcPorts.getPortList(); 
-        else if( srcPorts.ports && srcPorts.ports[0] instanceof AutoRouterPort )
-            srcPorts = srcPorts.ports; 
-        else
-            srcPorts = srcPorts instanceof Array ? srcPorts : [ srcPorts ];
-
-        if( dstPorts instanceof AutoRouterBox )
-            dstPorts = dstPorts.getPortList(); 
-        else if( dstPorts.ports && dstPorts.ports[0] instanceof AutoRouterPort )
-            dstPorts = dstPorts.ports; 
-        else
-            dstPorts = dstPorts instanceof Array ? dstPorts : [ dstPorts ];
-
-        for(i = 0; i < srcPorts.length; i++){
-            srcConnectionPoints.push(srcPorts[i].getRect().getCenter());
+        //Generate pathId
+        while( pathId.length < 6 ){
+            pathId = "0" + pathId;
         }
-        for(i = 0; i < dstPorts.length; i++){
-            dstConnectionPoints.push(dstPorts[i].getRect().getCenter());
-        }
+        pathId = "PATH_" + pathId;
 
-
-        if (segmentPoints && segmentPoints.length > 0) {
-            for (i = 0; i < srcConnectionPoints.length; i += 1) {
-                for (j = 0; j < dstConnectionPoints.length; j += 1) {
-                    dx = { "src": Math.abs(srcConnectionPoints[i].x - segmentPoints[0][1]),
-                        "dst": Math.abs(dstConnectionPoints[j].x - segmentPoints[segmentPoints.length - 1][0])};
-
-                    dy =  { "src": Math.abs(srcConnectionPoints[i].y - segmentPoints[0][1]),
-                        "dst": Math.abs(dstConnectionPoints[j].y - segmentPoints[segmentPoints.length - 1][1])};
-
-                    cLength = Math.sqrt(dx.src * dx.src + dy.src * dy.src) + Math.sqrt(dx.dst * dx.dst + dy.dst * dy.dst);
-
-                    if (minLength === -1 || minLength > cLength) {
-                        minLength = cLength;
-                        srcP = i;
-                        dstP = j;
-                    }
-                }
-            }
-        } else {
-            for (i = 0; i < srcConnectionPoints.length; i += 1) {
-                for (j = 0; j < dstConnectionPoints.length; j += 1) {
-                    dx = Math.abs(srcConnectionPoints[i].x - dstConnectionPoints[j].x);
-                    dy = Math.abs(srcConnectionPoints[i].y - dstConnectionPoints[j].y);
-
-                    cLength = Math.sqrt(dx * dx + dy * dy);
-
-                    if (minLength === -1 || minLength > cLength) {
-                        minLength = cLength;
-                        srcP = i;
-                        dstP = j;
-                    }
-                }
-            }
-        }
-
-        return { "src": srcPorts[ srcP ], "dst": dstPorts[ dstP ] };
+        a.id = pathId;
+        this._createPath(a);
+    
+        return pathId;
     };
 
-    AutoRouter.prototype.addPath = function(a){
+    AutoRouter.prototype._createPath = function(a){
         if( !a.src || !a.dst)
-            throw "AutoRouter:addPath missing source or destination";
+            throw "AutoRouter:_createPath missing source or destination";
     
-        var src = a.src, //src is obj with either a box & port specified or just a box
-            dst = a.dst, 
+        var id = a.id,
             autoroute = a.autoroute || true,
             startDir = a.startDirection || a.start,
             endDir = a.endDirection || a.end,
+            src = [], 
+            dst = [],
             path;
-    
-        assert(src instanceof AutoRouterBox || src instanceof AutoRouterPort || src.ports[0] instanceof AutoRouterPort, "AutoRouter.addPath: src is not recognized as an AutoRouterPort");
-        assert(dst instanceof AutoRouterBox || dst instanceof AutoRouterPort || dst.ports[0] instanceof AutoRouterPort, "AutoRouter.addPath: dst is not recognized as an AutoRouterPort");
-        if( src.ports || dst.ports
-                || src instanceof Array || dst instanceof Array ){ //If there are multiple port possibilities
-            var srcPorts = src.ports || src,
-                dstPorts = dst.ports || dst,
-                portsInfo = this._getClosestPorts(srcPorts, dstPorts);
-    
-            src = portsInfo.src;
-            dst = portsInfo.dst;
+
+        for(var i in a.src){
+            if(a.src.hasOwnProperty(i)){
+                src.push(a.src[i]);
+            }
+        }
+        for(var i in a.dst){
+            if(a.dst.hasOwnProperty(i)){
+                dst.push(a.dst[i]);
+            }
         }
     
+        assert(src instanceof AutoRouterPort
+                    || src instanceof Array || src.ports[0] instanceof AutoRouterPort, "AutoRouter:_createPath: src is not recognized as an AutoRouterPort");
+        assert(dst instanceof AutoRouterPort
+                    || dst instanceof Array || dst.ports[0] instanceof AutoRouterPort, "AutoRouter:_createPath: dst is not recognized as an AutoRouterPort");
         path = this.router.addPath(autoroute, src, dst);
     
         if(startDir || endDir){ 
@@ -7529,21 +8179,23 @@ pt = [pt];
             path.setEndDir(ARPATH_Default);
         }
     
-        this.paths.push(path);
+        var pathData = new ArPathObject(id, path, a.src, a.dst);
+        this.paths[id] = pathData;
     
         //Register the path under box id
-        this.boxId2Path[src.getOwner().getID()].out.push(path);
-        this.boxId2Path[dst.getOwner().getID()].in.push(path);
-        return path;
+        this.boxId2Path[src[0].getOwner().getID()].out.push(pathData);//Assuming all ports belong to the same box
+        this.boxId2Path[dst[0].getOwner().getID()].in.push(pathData);//so the specific port to check is trivial
+        return pathData;
     };
     
     AutoRouter.prototype.autoroute = function(){ 
         this.router.autoRoute();
     };
-    
-    AutoRouter.prototype.getPathPoints = function(path){
-        assert(this.paths.indexOf(path) != -1, "AutoRouter:getPath requested path does not match any current paths");
-        var points = path.getPointList(),
+
+    AutoRouter.prototype.getPathPoints = function(pathId){
+        assert(this.paths[pathId] !== undefined, "AutoRouter:getPath requested path does not match any current paths");
+        var path = this.paths[pathId].path,
+            points = path.getPointList(),
             i = -1,
             res = [];
     
@@ -7557,50 +8209,99 @@ pt = [pt];
     
     AutoRouter.prototype.setBox = function(boxObject, size){
         var box = boxObject.box,
-            ports = boxObject.ports,
             x1 = size.x1 !== undefined ? size.x1 : (size.x2 - size.width),
             x2 = size.x2 !== undefined ? size.x2 : (size.x1 + size.width),
             y1 = size.y1 !== undefined ? size.y1 : (size.y2 - size.height),
             y2 = size.y2 !== undefined ? size.y2 : (size.y1 + size.height),
-            connAreas = size.ConnectionAreas,
+            connInfo = size.ConnectionInfo,
             rect = new ArRect(x1, y1, x2, y2),
             paths = { "in": this.boxId2Path[ box.getID() ].in, "out": this.boxId2Path[ box.getID() ].out },
-            i = paths.in.length;
+            i = paths.in.length,
+            ports;
     
         //Remove and Add Ports
         box.deleteAllPorts();
         boxObject.ports = [];
         this.router.setBoxRect(box, rect);
-        this.setConnectionAreas(boxObject, connAreas);
+        this.setConnectionInfo(boxObject, connInfo);
+        ports = boxObject.ports; //get the new ports
     
         //Reconnect paths to ports
         while( i-- ){
-            var pathSrc = paths.in[i].getStartPort().getOwner(),
-                newEndPort = this._getClosestPorts( pathSrc, boxObject ).dst;
-            paths.in[i].setEndPort( newEndPort );
-            this.router.disconnect( paths.in[i] );
+            var pathSrc = paths.in[i].path.getStartPorts();
+                //paths.in[i].path.setEndPorts( ports );
+                paths.in[i].setDstPorts(ports);
+                paths.in[i].updateDstPorts();
+                this.router.disconnect( paths.in[i].path );
         }
     
         i = paths.out.length;
         while( i-- ){
-            var pathDst = paths.out[i].getEndPort().getOwner(),
-                newStartPort = this._getClosestPorts( boxObject, pathDst ).src;
-            paths.out[i].setStartPort( newStartPort );
-            this.router.disconnect( paths.out[i] );
+            var pathDst = paths.out[i].path.getEndPorts();
+                //paths.out[i].path.setStartPorts( ports );
+                paths.out[i].setSrcPorts(ports);
+                paths.out[i].updateSrcPorts();
+                this.router.disconnect( paths.out[i].path );
         }
     };
     
-    AutoRouter.prototype.setConnectionAreas = function(boxObject, connArea){
-        var box = boxObject.box,
+    AutoRouter.prototype.setConnectionInfo = function(boxObject, connArea){
+        var pathObjects = this.boxId2Path[boxObject.box.getID()],
             oldPorts = boxObject.ports,
+            box = boxObject.box,
+            i = pathObjects.out.length,
             ports;
     
-    
-        while( oldPorts.length ){
-            box.deletePort(oldPorts[0]);
+        ports = this.addPort(box, connArea);//Get new ports
+
+        while(i--){//Update the paths with deleted ports
+            var hasSrc = false,
+                srcPorts = pathObjects.out[i].getSrcPorts();//Used to see if the path should be removed
+
+            for(var srcPort in srcPorts){
+                if(srcPorts.hasOwnProperty(srcPort)){
+                    if(ports.hasOwnProperty(srcPort)){
+                        pathObjects.out[i].setSrcPort(srcPort, ports[srcPort]);
+                        hasSrc = true;
+                    }else{
+                        pathObjects.out[i].deleteSrcPort(srcPort);
+                    }
+                }
+            }
+            if(hasSrc){//Adjust path if applicable
+                this.router.disconnect(pathObjects.out[i].path);
+                pathObjects.out[i].updateSrcPorts();
+            }
+        }
+
+        i = pathObjects.in.length;
+        while(i--){
+            var hasDst = false,
+                dstPorts = pathObjects.in[i].getDstPorts();
+
+            for(var dstPort in dstPorts){
+                if(dstPorts.hasOwnProperty(dstPort)){
+                    if(ports.hasOwnProperty(dstPort)){
+                        pathObjects.in[i].setDstPort(dstPort, ports[dstPort]);
+                        hasDst = true;
+                    }else{
+                        pathObjects.in[i].deleteDstPort(dstPort);
+                    }
+                }
+            }
+
+            if(hasDst){//Adjust path if applicable
+                this.router.disconnect(pathObjects.in[i].path);
+                pathObjects.in[i].updateDstPorts();
+            }
         }
     
-        ports = this.addPort(box, connArea);
+        for(var oldPort in oldPorts){//Remove old ports
+            if(oldPorts.hasOwnProperty(oldPort)){
+                box.deletePort(oldPorts[oldPort]);
+            }
+        }
+
         boxObject.ports = ports;
     
         return new ArBoxObject(box, ports);
@@ -7614,11 +8315,30 @@ pt = [pt];
             this.boxId2Path[ item.getID() ] = undefined;
             this.router.deleteBox(item);
     
-        }else if(item instanceof AutoRouterPath){
-            this.router.deletePath(item); //This should remove it from boxId2Path dictionary also
+        }else if(this.paths[item] !== undefined){
+            if(this.paths[item].path instanceof AutoRouterPath){
+                var pathData = this.paths[item],
+                    path = pathData.path,
+                    srcBoxId = pathData.getSrcBoxId(),
+                    dstBoxId = pathData.getDstBoxId(),
+                    i;
+                    
+                if(srcBoxId){
+                    i = this.boxId2Path[srcBoxId].out.indexOf(pathData);//Remove from boxId2Path dictionary
+                    this.boxId2Path[srcBoxId].out.splice(i, 1);
+                }
+
+                if(dstBoxId){
+                    i = this.boxId2Path[dstBoxId].in.indexOf(pathData);
+                    this.boxId2Path[dstBoxId].in.splice(i, 1);
+                }
+
+                this.router.deletePath(path); 
+            }
+            delete this.paths[item]; //Remove dictionary entry
     
         }else
-            throw "AutoRouter:remove Unrecognized item type. Must be an AutoRouterBox or an AutoRouterPath";
+            throw "AutoRouter:remove Unrecognized item type. Must be an AutoRouterBox or an AutoRouterPath ID";
     };
     
     AutoRouter.prototype.move = function( box, details ){
@@ -7636,16 +8356,24 @@ pt = [pt];
         this.router.setBuffer( Math.floor(min/2) );
     };
     
-    AutoRouter.prototype.setPathCustomPoints = function( args ){ //args.path = [ [x, y], [x2, y2], ... ]
-        var points = [],
+    AutoRouter.prototype.setComponent = function(pBoxObj, chBoxObj){
+        var mother = pBoxObj.box,
+            child = chBoxObj.box;
+
+        mother.addChild(child);
+    };
+
+    AutoRouter.prototype.setPathCustomPoints = function( args ){ //args.points = [ [x, y], [x2, y2], ... ]
+        var path = this.paths[args.path].path,
+            points = [],
             i = 0;
-        if( !args.path instanceof AutoRouterPath )
+        if( path === undefined )
             throw "AutoRouter: Need to have an AutoRouterPath type to set custom path points";
     
         if( args.points.length > 0 )
-            args.path.setAutoRouting( false );
+            path.setAutoRouting( false );
         else
-            args.path.setAutoRouting( true );
+            path.setAutoRouting( true );
     
         //Convert args.points to array of [ArPoint] 's
         while ( i < args.points.length ){
@@ -7653,10 +8381,10 @@ pt = [pt];
             ++i;
         }
     
-        args.path.setCustomPathData( points );
+        path.setCustomPathData( points );
     
     };
-    
+
     return AutoRouter;
     
 });

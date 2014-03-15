@@ -84,33 +84,29 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
             },child,basechild,node,relid);
         };
 
-		core.loadByPath = function(node, path) {
-			ASSERT(isValidNode(node));
-			return TASYNC.call(__loadBase, oldcore.loadByPath(node, path));
-		};
-
-        core.loadPointer = function(node,name){
-            var pointer = TASYNC.call(__loadBase,oldcore.loadPointer(node, name));
-            var base = core.getBase(node);
-            var basepointer = null;
-            if(base){
-                basepointer = TASYNC.call(__loadBase,oldcore.loadPointer(base, name));
+        core.loadByPath = function(node,path){
+            ASSERT(isValidNode(node));
+            ASSERT(path === "" || path.charAt(0) === "/");
+            path = path.split("/");
+            return loadDescendantByPath(node, path, 1);
+        };
+        var loadDescendantByPath = function(node,pathArray,index){
+            if (node === null || index === pathArray.length) {
+                return node;
             }
-            return TASYNC.call(function(p,bp,n,nm){
-                var done = null;
-                if(p === null){
-                    if(bp !== null){
-                        core.setPointer(n,nm,bp);
-                        done = core.persist(core.getRoot(n));
-                        p = bp;
-                    }
-                }
-                return TASYNC.call(function(pointer){return pointer;},p,done);
-            },pointer,basepointer,node,relid);
+
+            var child = core.loadChild(node, pathArray[index]);
+            return TASYNC.call(loadDescendantByPath, child, pathArray, index + 1);
+        };
+
+        //TODO the pointer loading is totally based upon the loadByPath...
+        core.loadPointer = function(node,name){
+            var pointerPath = core.getPointerPath(node,name);
+            return TASYNC.call(core.loadByPath,core.getRoot(node),pointerPath);
         };
 
 		function __loadBase(node) {
-			ASSERT(typeof node.base === "undefined" || typeof node.base === "object");
+			ASSERT(node === null || typeof node.base === "undefined" || typeof node.base === "object");
 
 			if (typeof node.base === "undefined") {
                 if(isFalseNode(node)){
@@ -118,10 +114,13 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
                     var root = core.getRoot(node);
                     core.deleteNode(node);
                     return TASYNC.call(function(){return null;},core.persist(root));
+                    //return null;
                 } else {
                     return TASYNC.call(__loadBase2, node, oldcore.loadPointer(node, "base"));
                 }
-			} else {
+			} else if(node === null){
+                return node; //TODO we have to check if it can be allowed or we have to make the nullpointer otherwise
+            } else {
                 var oldpath = core.getPath(node.base);
                 var newpath = core.getPointerPath(node,"base");
                 if(oldpath !== newpath){
@@ -163,6 +162,7 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
         core.loadChildren = function(node) {
             ASSERT(isValidNode(node));
             var relids = core.getChildrenRelids(node);
+            relids = relids.sort(); //TODO this should be temporary
             var children = [];
             for(var i = 0; i< relids.length; i++)
                 children[i] = core.loadChild(node,relids[i]);
@@ -177,28 +177,18 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
             },TASYNC.lift(children));
         };
 
-
+        //TODO now the collection paths doesn't take any kind of inheritance into account...
         core.loadCollection = function(node, name) {
-			ASSERT(isValidNode(node));
-			return TASYNC.call(__loadBaseArray, oldcore.loadCollection(node, name));
-		};
+            var root =  core.getRoot(node);
+            var paths = core.getCollectionPaths(node,name);
 
-		function __loadBaseArray(nodes) {
-			ASSERT(nodes instanceof Array);
+            var nodes = [];
+            for(var i = 0; i < paths.length; i++) {
+                nodes[i] = core.loadByPath(root, paths[i]);
+            }
 
-			for ( var i = 0; i < nodes.length; ++i)
-				nodes[i] = __loadBase(nodes[i]);
-
-			return TASYNC.call(function(n){
-                var newn = [];
-                for(var i=0; i<n.length;i++){
-                    if(n[i] !== null){
-                        newn.push(n[i]);
-                    }
-                }
-                return newn;
-            },TASYNC.lift(nodes));
-		}
+            return TASYNC.lift(nodes);
+        };
 
 		// ----- creation
 
@@ -238,6 +228,9 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
 
 			return Object.keys(merged);
 		};
+        core.getOwnAttributeNames = function(node){
+            return oldcore.getAttributeNames(node);
+        };
 
 		core.getRegistryNames = function(node) {
 			ASSERT(isValidNode(node));
@@ -256,6 +249,9 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
 
 			return Object.keys(merged);
 		};
+        core.getOwnRegistryNames = function(node){
+            return oldcore.getRegistryNames(node);
+        };
 
 		core.getAttribute = function(node, name) {
 			ASSERT(isValidNode(node));
@@ -267,6 +263,9 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
 
 			return value;
 		};
+        core.getOwnAttribute = function(node,name) {
+            return oldcore.getAttribute(node,name);
+        };
 
 		core.getRegistry = function(node, name) {
 			ASSERT(isValidNode(node));
@@ -278,6 +277,10 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
 
 			return value;
 		};
+        core.getOwnRegistry = function(node,name) {
+            return oldcore.getRegistry(node,name);
+        };
+
 
 		// ----- pointers
 
@@ -298,19 +301,107 @@ define([ "util/assert", "core/core", "core/tasync" ], function(ASSERT, Core, TAS
 
 			return Object.keys(merged);
 		};
+        core.getOwnPointerNames = function(node){
+            ASSERT(isValidNode(node));
+            return oldcore.getPointerNames(node);
+        };
 
-		core.getPointerPath = function(node, name) {
-			ASSERT(isValidNode(node));
-            var value;
-			do {
-				value = oldcore.getPointerPath(node, name);
-				node = node.base;
-			} while (typeof value === "undefined" && node !== null);
+        core.getPointerPath = function (node, name) {
+            ASSERT(isValidNode(node) && typeof name === "string");
 
-			return value;
-		};
+            var ownPointerPath = oldcore.getPointerPath(node,name);
+            if(ownPointerPath !== undefined){
+                return ownPointerPath;
+            }
+            var source = "",
+                target,
+                coretree = core.getCoreTree(),
+                parentOfBase,
+                baseOfParent,
+                basePath,
+                hasNullTarget = false,
+                getProperty = function(node,name){
+                    var property;
+                    while(property === undefined && node !== null){
+                        property = coretree.getProperty(node,name);
+                        node = core.getBase(node);
+                    }
+                    return property;
+                },
+                getSimpleBasePath = function(node){
+                    var path = oldcore.getPointerPath(node,name);
+                    if(path === undefined){
+                        if(node.base !== null && node.base !== undefined){
+                            return getSimpleBasePath(node.base);
+                        } else {
+                            return undefined;
+                        }
+                    } else {
+                        return path;
+                    }
+                },
+                getParentOfBasePath = function(node){
+                    if(node.base){
+                        var parent = core.getParent(node.base);
+                        if(parent){
+                            return core.getPath(parent);
+                        } else {
+                            return undefined;
+                        }
+                    } else {
+                        return undefined;
+                    }
+                },
+                getBaseOfParentPath = function(node){
+                    var parent = core.getParent(node);
+                    if(parent){
+                        if(parent.base){
+                            return core.getPath(parent.base);
+                        } else {
+                            return undefined;
+                        }
+                    } else {
+                        return undefined;
+                    }
+                },
+                getTargetRelPath = function(node,relSource,name){
+                    var ovr = core.getChild(node,'ovr');
+                    var source = core.getChild(ovr,relSource);
+                    return getProperty(source,name);
+                };
 
-        // -------- kecso
+            basePath = node.base ? getSimpleBasePath(node.base) : undefined;
+
+            while(node){
+                target = getTargetRelPath(node,source,name);
+                if( target !== undefined){
+                    if(target.indexOf('_nullptr') !== -1){
+                        hasNullTarget = true;
+                        target = undefined;
+                    } else {
+                        break;
+                    }
+                }
+
+                source = "/" + core.getRelid(node) + source;
+                if(getParentOfBasePath(node) === getBaseOfParentPath(node)){
+                    node = core.getParent(node);
+                } else {
+                    node = null;
+                }
+            }
+
+
+            if (target !== undefined) {
+                ASSERT(node);
+                target = coretree.joinPaths(oldcore.getPath(node), target);
+            }
+            return target || basePath || (hasNullTarget ? null : undefined);
+        };
+        core.getOwnPointerPath = function(node,name){
+            oldcore.getPointerPath(node,name);
+        };
+
         core.setBase = function(node,base){
             ASSERT(isValidNode(node) && (base === undefined || base === null || isValidNode(base)));
             ASSERT(!base || core.getPath(core.getParent(node)) !== core.getPath(base));

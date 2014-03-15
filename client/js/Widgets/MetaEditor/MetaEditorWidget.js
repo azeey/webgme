@@ -21,6 +21,14 @@ define(['logManager',
         params = params || {};
         params.loggerName = "MetaEditorWidget";
 
+        //disable line style parameter controls in toolbar
+        params.lineStyleControls = false;
+
+        params.tabsEnabled = true;
+        params.addTabs = true;
+        params.deleteTabs = true;
+        params.reorderTabs = true;
+
         __parent__.call(this, container, params);
 
         this.logger.debug("MetaEditorWidget ctor");
@@ -101,8 +109,8 @@ define(['logManager',
         this.$filterHeader.html('FILTER' + (all === on ? '' : ' *'));
     };
 
-    MetaEditorWidget.prototype.selectNewPointerName = function (existingPointerNames, notAllowedPointerNames, isPointerList, callBack) {
-       new MetaEditorPointerNamesDialog().show(existingPointerNames, notAllowedPointerNames, isPointerList, callBack);
+    MetaEditorWidget.prototype.selectNewPointerName = function (existingPointerNames, notAllowedPointerNames, isSet, callBack) {
+       new MetaEditorPointerNamesDialog().show(existingPointerNames, notAllowedPointerNames, isSet, callBack);
     };
 
     MetaEditorWidget.prototype.setFilterChecked = function (value) {
@@ -111,9 +119,19 @@ define(['logManager',
         }
     };
 
-    MetaEditorWidget.prototype.getDragEffects = function (selectedElements, event) {
+    MetaEditorWidget.prototype.getDragEffects = function (/*selectedElements, event*/) {
         //the only drag is a MOVE
         return [DragHelper.DRAG_EFFECTS.DRAG_MOVE];
+    };
+
+    /* OVERWRITE DiagramDesignerWidget.prototype._dragHelper */
+    MetaEditorWidget.prototype._dragHelper = function (el, event, dragInfo) {
+        var helperEl = DiagramDesignerWidget.prototype._dragHelper.apply(this, [el, event, dragInfo]);
+
+        //clear out default 'Move' text from helperEl
+        helperEl.html('');
+
+        return helperEl;
     };
 
     return MetaEditorWidget;

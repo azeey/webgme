@@ -37,12 +37,6 @@ define(['jquery',
         $.extend(this, new EventDispatcher());
     };
 
-    TerritoryUI.prototype.onOneEvent = function (/*events*/) {
-        _processMetaContainer();
-
-        this.dispatchEvent(_events.META_ASPECT_CHANGED);
-    };
-
     var _reset = function () {
         _metaTypes = {};
 
@@ -52,7 +46,10 @@ define(['jquery',
 
         //there is an open project
         if (_client.getActiveProject()) {
-            _territoryId = _client.addUI(_territoryUI, true);
+            _territoryId = _client.addUI(_territoryUI, function (/*events*/) {
+                _processMetaContainer();
+                _territoryUI.dispatchEvent(_events.META_ASPECT_CHANGED);
+            });
 
             _patterns = {};
             _metaMembers = [];
@@ -88,7 +85,7 @@ define(['jquery',
         i = ret.length;
         while (i--) {
             if (allowed.indexOf(ret[i]) === -1) {
-                ret.splice(i, 1);
+                ret = ret.substr(0, i) + ret.substr(i + 1);
             }
         }
 
@@ -190,7 +187,6 @@ define(['jquery',
         });
 
         _territoryUI = new TerritoryUI();
-        _initialize = undefined;
     };
 
     var _isMETAType = function (objID, metaTypeID) {
@@ -284,7 +280,7 @@ define(['jquery',
             var projName = _client.getActiveProject();
             var content = METATemplateJS;
             var sortedMetaTypes = _getMETAAspectTypesSorted();
-            var typeCheckMethodTemplate = 'var _is__METATYPE__ = function (objID) { return METAAspectHelper.isMETAType(objID, _metaTypes.__METATYPE__); };'
+            var typeCheckMethodTemplate = 'var _is__METATYPE__ = function (objID) { return METAAspectHelper.isMETAType(objID, _metaTypes.__METATYPE__); };';
             var typeCheckMethods = '';
             var typeCheckMethodsMap = [];
             var typeCheckMethodNamePrefix = 'is';

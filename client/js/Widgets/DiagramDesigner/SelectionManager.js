@@ -8,7 +8,7 @@
 
 define(['logManager',
     'clientUtil',
-    'js/Widgets/DiagramDesigner/DiagramDesignerWidget.Constants'], function (logManager,
+    './DiagramDesignerWidget.Constants'], function (logManager,
                             clientUtil,
                             DiagramDesignerWidgetConstants) {
 
@@ -47,56 +47,32 @@ define(['logManager',
         //enable SelectionManager specific DOM event listeners
         var self = this;
 
-        //handle mouse down in designer-items
-        this.$el.on('mousedown.SelectionManagerItem', 'div.' + DiagramDesignerWidgetConstants.DESIGNER_ITEM_CLASS,  function (event) {
-            var itemId = $(this).attr("id");
-
-            self._diagramDesigner._triggerUIActivity();
-
+        this._diagramDesigner.onItemMouseDown = function (itemId, eventDetails) {
             if (self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.READ_ONLY ||
                 self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.DESIGN) {
-                self._diagramDesigner.onElementMouseDown(itemId);
-                self._setSelection([itemId], self._isMultiSelectionModifierKeyPressed(event));
+                self._setSelection([itemId], self._isMultiSelectionModifierKeyPressed(eventDetails));
             }
+        };
 
-            event.stopPropagation();
-            event.preventDefault();
-        });
-
-        //handle mouse down in designer-connections
-        this.$el.on('mousedown.SelectionManagerConnection', 'path[class="' + DiagramDesignerWidgetConstants.DESIGNER_CONNECTION_CLASS +'"]',  function (event) {
-            var connId = $(this).attr("id").replace(DiagramDesignerWidgetConstants.PATH_SHADOW_ARROW_END_ID_PREFIX, "").replace(DiagramDesignerWidgetConstants.PATH_SHADOW_ID_PREFIX, "");
-
-            self._diagramDesigner._triggerUIActivity();
-
+        this._diagramDesigner.onConnectionMouseDown = function (connId, eventDetails) {
             if (self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.READ_ONLY ||
                 self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.DESIGN) {
-                self._diagramDesigner.onElementMouseDown(connId);
-                self._setSelection([connId], self._isMultiSelectionModifierKeyPressed(event));
+                self._setSelection([connId], self._isMultiSelectionModifierKeyPressed(eventDetails));
             }
+        };
 
-            event.stopPropagation();
-            event.preventDefault();
-        });
-
-        //handle mouse down on background --> start rubberband selection
-        this.$el.on('mousedown.SelectionManager', function (event) {
-
-            self._diagramDesigner._triggerUIActivity();
-
-            if (self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.DESIGN) {
-                self._onBackgroundMouseDown(event);
+        this._diagramDesigner.onBackgroundMouseDown = function (eventDetails) {
+            if (self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.READ_ONLY ||
+                self._diagramDesigner.mode === self._diagramDesigner.OPERATING_MODES.DESIGN) {
+                self._onBackgroundMouseDown(eventDetails);
             }
-
-            event.stopPropagation();
-        });
+        };
     };
 
     SelectionManager.prototype._deactivateMouseListeners = function () {
-        //disable SelectionManager specific DOM event listeners
-        this.$el.off('mousedown.SelectionManagerItem', 'div.' + DiagramDesignerWidgetConstants.DESIGNER_ITEM_CLASS);
-        this.$el.off('mousedown.SelectionManagerConnection', 'path[class="' + DiagramDesignerWidgetConstants.DESIGNER_CONNECTION_CLASS +'"]');
-        this.$el.off('mousedown.SelectionManager');
+        this._diagramDesigner.onItemMouseDown = undefined;
+        this._diagramDesigner.onConnectionMouseDown = undefined;
+        this._diagramDesigner.onBackgroundMouseDown = undefined;
     };
 
     SelectionManager.prototype.initialize = function (el) {
@@ -140,9 +116,9 @@ define(['logManager',
     /*********************** RUBBERBAND SELECTION *************************************/
 
     SelectionManager.prototype._onBackgroundMouseDown = function (event) {
-        var mousePos = this._diagramDesigner.getAdjustedMousePos(event),
+        var mousePos = {'mX': event.mouseX, 'mY': event.mouseY},
             self = this,
-            leftButton = event.which === 1;
+            leftButton = event.rightClick !== true;
 
         this.logger.debug("SelectionManager._onBackgroundMouseDown at: " + JSON.stringify(mousePos));
 
@@ -163,18 +139,14 @@ define(['logManager',
             this.$el.append(this.$rubberBand);
 
             //hook up MouseMove and MouseUp
-            this._onBackgroundMouseMoveCallBack = function (event) {
-                self._onBackgroundMouseMove(event);
-            };
-
-            this._onBackgroundMouseUpCallBack = function (event) {
-                self._onBackgroundMouseUp(event);
-            };
-
-            $(document).on('mousemove.SelectionManager', this._onBackgroundMouseMoveCallBack);
-            $(document).on('mouseup.SelectionManager', this._onBackgroundMouseUpCallBack);
-
-            event.stopPropagation();
+            this._diagramDesigner.trackMouseMoveMouseUp(
+                function (event) {
+                    self._onBackgroundMouseMove(event);
+                },
+                function (event) {
+                    self._onBackgroundMouseUp(event);
+                }
+            );
         }
     };
 
@@ -190,7 +162,7 @@ define(['logManager',
     };
 
     SelectionManager.prototype._onBackgroundMouseMove = function (event) {
-        var mousePos = this._diagramDesigner.getAdjustedMousePos(event);
+        var mousePos = {'mX': event.mouseX, 'mY': event.mouseY};
 
         if (this._rubberbandSelection) {
             this._rubberbandSelection.x2 = mousePos.mX;
@@ -200,19 +172,10 @@ define(['logManager',
     };
 
     SelectionManager.prototype._onBackgroundMouseUp = function (event) {
-        var mousePos = this._diagramDesigner.getAdjustedMousePos(event),
+        var mousePos = {'mX': event.mouseX, 'mY': event.mouseY},
             params;
 
         if (this._rubberbandSelection) {
-            //unbind mousemove and mouseup handlers
-            $(document).off('mousemove.SelectionManager', this._onBackgroundMouseMoveCallBack);
-            $(document).off('mouseup.SelectionManager', this._onBackgroundMouseUpCallBack);
-
-            //delete unnecessary instance members
-            delete this._onBackgroundMouseMoveCallBack;
-            delete this._onBackgroundMouseUpCallBack;
-
-            //
             this._rubberbandSelection.x2 = mousePos.mX;
             this._rubberbandSelection.y2 = mousePos.mY;
 
@@ -387,6 +350,24 @@ define(['logManager',
                         }
 
                         changed = true;
+                    } else {
+                        var idx = this._selectedElements.indexOf(itemId);
+                        this._selectedElements.splice(idx, 1);
+
+                        item = items[itemId];
+
+                        if ($.isFunction(item.onDeselect)) {
+                            item.onDeselect();
+                        }
+
+                        changed = true;
+                    }
+                }
+
+                if (this._selectedElements.length === 1) {
+                    item = items[this._selectedElements[0]];
+                    if ($.isFunction(item.onSelect)) {
+                        item.onSelect(false);
                     }
                 }
             } else {
@@ -572,7 +553,8 @@ define(['logManager',
     /************* RENDER COMMAND BUTTONS ON SELECTION OUTLINE ************************/
     SelectionManager.prototype._renderSelectionActions = function () {
         var self = this,
-            deleteBtn;
+            deleteBtn,
+            contextMenuBtn;
 
         if (this._diagramDesigner.getIsReadOnlyMode() === true) {
             return;
@@ -587,6 +569,14 @@ define(['logManager',
             deleteBtn.html('<i class="icon-remove"></i>');
         }
 
+        //context menu
+        contextMenuBtn = $('<div/>', {
+            "class" : "s-btn contextmenu",
+            "command" : "contextmenu"
+        });
+        this._diagramDesigner.skinParts.$selectionOutline.append(contextMenuBtn);
+        contextMenuBtn.html('<i class="icon-list-alt"></i>');
+
         //detach mousedown handler on selection outline
         this._diagramDesigner.skinParts.$selectionOutline.off("mousedown").off("click", ".s-btn");
         this._diagramDesigner.skinParts.$selectionOutline.on("mousedown", function (event) {
@@ -595,7 +585,7 @@ define(['logManager',
             var command = $(this).attr("command");
             self.logger.debug("Selection button clicked with command: '" + command + "'");
 
-            self.onSelectionCommandClicked(command, self._selectedElements);
+            self.onSelectionCommandClicked(command, self._selectedElements, event);
 
             event.stopPropagation();
             event.preventDefault();
@@ -614,7 +604,7 @@ define(['logManager',
             rotateBtnBottom = $('<div/>', {
                 "class" : "s-btn rotate bottom"
             });
-            rotateBtnBottom.html('<i class="icon-repeat"><div class="popover right nowrap" style="top: -10px; left: 22px; display: none;"><div class="arrow"></div><div class="popover-content narrow"><div class="btn-group"><a class="btn btn-small" id="rotate-left" title="Rotate left"><i class="icon-repeat flip-vertical"></i></a><a class="btn  btn-small" id="rotate-right" title="Rotate right"><i class="icon-repeat"></i></a></div></div></div></i>');
+            rotateBtnBottom.html('<i class="icon-repeat"><div class="popover right nowrap" style="top: -10px; left: 22px; display: none;"><div class="arrow"></div><div class="popover-content narrow"><div class="btn-group"><a class="btn btn-small" id="rotate-left" title="Rotate left"><i class="icon-repeat flip-vertical"></i></a><a class="btn  btn-small" id="rotate-right" title="Rotate right"><i class="icon-repeat"></i></a><a class="btn  btn-small" id="rotate-reset" title="Reset rotation"><i class="icon-remove"></i></a></div></div></div></i>');
 
             this._rotationDegree = $('<div/>', {
                 "class" : "rotation-deg"
@@ -653,6 +643,9 @@ define(['logManager',
                         break;
                     case 'right':
                         deg = 90;
+                        break;
+                    case DiagramDesignerWidgetConstants.ROTATION_RESET:
+                        deg = DiagramDesignerWidgetConstants.ROTATION_RESET;
                         break;
                 }
 

@@ -4,15 +4,14 @@ define([
     'util/guid',
     'core/core',
     'storage/clientstorage',
-    'storage/hashcheck',
-    'storage/cache',
-    'storage/failsafe',
-    'storage/client',
-    'storage/log',
-    'storage/commit',
     'logManager',
     'util/url',
-    'coreclient/metaforgui'
+    'coreclient/meta',
+    'coreclient/tojson',
+    'coreclient/dump',
+    'coreclient/dumpmore',
+    'coreclient/import',
+    'coreclient/copyimport'
 ],
     function (
         ASSERT,
@@ -20,17 +19,17 @@ define([
         GUID,
         Core,
         Storage,
-        HashCheck,
-        Cache,
-        Failsafe,
-        SocketIOClient,
-        Log,
-        Commit,
         LogManager,
         URL,
-        META
+        BaseMeta,
+        ToJson,
+        Dump,
+        DumpMore,
+        MergeImport,
+        Import
         ) {
 
+        var ROOT_PATH = '';
         function COPY(object){
             if(object){
                 return JSON.parse(JSON.stringify(object));
@@ -41,7 +40,7 @@ define([
 
         function getNewCore(project){
             //return new NullPointerCore(new DescriptorCore(new SetCore(new GuidCore(new Core(project)))));
-            return Core(project,{autopersist: true,usertype:'nodejs'});
+            return Core(project,{autopersist: true,usertype:'nodejs',corerel:2});
         }
         function Client(_configuration){
             var _self = this,
@@ -50,9 +49,6 @@ define([
                 _projectName = null,
                 _project = null,
                 _core = null,
-                _selectedObjectId = null,
-                _activeSelection = [],
-                _propertyEditorSelection = null,
                 _branch = null,
                 _branchState = null,
                 _nodes = {},
@@ -64,13 +60,14 @@ define([
                 _msg = "",
                 _recentCommits = [],
                 _viewer = false,
+                _readOnlyProject = false,
                 _loadNodes = {},
                 _loadError = 0,
                 _commitCache = null,
                 _offline = false,
                 _networkWatcher = null,
-                _userName = URL.parseCookie(document.cookie).webgme || _configuration.user,
-                _privateKey = 4;
+                _TOKEN = null;
+                META = new BaseMeta();
 
             function print_nodes(pretext){
                 if(pretext){
@@ -93,15 +90,11 @@ define([
             _configuration.autoreconnect = _configuration.autoreconnect === null || _configuration.autoreconnect === undefined ? true : _configuration.autoreconnect;
             _configuration.reconndelay  = _configuration.reconndelay || 1000;
             _configuration.reconnamount = _configuration.reconnamount || 1000;
-            _configuration.host = _configuration.host || "http://"+document.location.hostname;
-            _configuration.port = _configuration.port || document.location.port;
             _configuration.autostart = _configuration.autostart === null || _configuration.autostart === undefined ? false : _configuration.autostart;
 
 
             $.extend(_self, new EventDispatcher());
             _self.events = {
-                "SELECTEDOBJECT_CHANGED": "SELECTEDOBJECT_CHANGED",
-                "PROPERTY_EDITOR_SELECTION_CHANGED": "PROPERTY_EDITOR_SELECTION_CHANGED",
                 "NETWORKSTATUS_CHANGED" : "NETWORKSTATUS_CHANGED",
                 "BRANCHSTATUS_CHANGED"  : "BRANCHSTATUS_CHANGED",
                 "BRANCH_CHANGED"        : "BRANCH_CHANGED",
@@ -128,35 +121,9 @@ define([
             }
 
             function newDatabase(){
-                return Storage({host:_configuration.host,port:_configuration.port,log:LogManager.create('client-storage')});
+                return Storage({log:LogManager.create('client-storage')});
             }
-            function setSelectedObjectId(objectId, activeSelection) {
-                /*if (objectId !== _selectedObjectId) {*/
-                    if (activeSelection) {
-                        _activeSelection = [].concat(activeSelection);
-                    } else {
-                        _activeSelection = [];
-                    }
-                    _selectedObjectId = objectId;
-                    _self.dispatchEvent(_self.events.SELECTEDOBJECT_CHANGED, _selectedObjectId);
-                    setPropertyEditorIdList([objectId]);
-                /*}*/
-            }
-            function clearSelectedObjectId() {
-                setSelectedObjectId(null);
-            }
-            function setPropertyEditorIdList(idList) {
-                if (idList !== _propertyEditorSelection) {
-                    _propertyEditorSelection = idList;
-                    _self.dispatchEvent(_self.events.PROPERTY_EDITOR_SELECTION_CHANGED, _propertyEditorSelection);
-                }
-            }
-            function clearPropertyEditorIdList() {
-                setPropertyEditorIdList([]);
-            }
-            function getActiveSelection() {
-                return _activeSelection;
-            }
+
             function changeBranchState(newstate){
                 if(_branchState !== newstate){
                     _branchState = newstate;
@@ -190,6 +157,23 @@ define([
                 _recentCommits.unshift(commitHash);
                 if(_recentCommits.length > 10){
                     _recentCommits.pop();
+                }
+            }
+
+            function tokenWathcer(){
+                var token = null;
+                var refreshToken = function(){
+                    _database.getToken(function(err,t){
+                        if(!err){
+                            token = t;
+                        }
+                    });
+                };
+                setInterval(refreshToken,10000); //maybe it could be configurable
+                refreshToken();
+
+                return {
+                    getToken: function(){return token;}
                 }
             }
 
@@ -448,53 +432,56 @@ define([
                 ASSERT(_database);
                 _database.openProject(name,function(err,p){
                     if(!err &&  p){
-                        _project = p;
-                        _projectName = name;
-                        _inTransaction = false;
-                        _nodes = {};
-                        _metaNodes = {};
-                        _core = getNewCore(_project);
-                        META.initialize(_core,_metaNodes,saveRoot);
-                        if(_commitCache){
-                            _commitCache.clearCache();
-                        } else {
-                            _commitCache = commitCache();
-                        }
-                        _self.dispatchEvent(_self.events.PROJECT_OPENED, _projectName);
+                        _database.getAuthorizationInfo(name,function(err,authInfo){
+                            _readOnlyProject = authInfo ? (authInfo.write === true ? false : true) : true;
+                            _project = p;
+                            _projectName = name;
+                            _inTransaction = false;
+                            _nodes = {};
+                            _metaNodes = {};
+                            _core = getNewCore(_project);
+                            META.initialize(_core,_metaNodes,saveRoot);
+                            if(_commitCache){
+                                _commitCache.clearCache();
+                            } else {
+                                _commitCache = commitCache();
+                            }
+                            _self.dispatchEvent(_self.events.PROJECT_OPENED, _projectName);
 
-                        //check for master or any other branch
-                        _project.getBranchNames(function(err,names){
-                            if(!err && names){
-                                var firstName = null;
+                            //check for master or any other branch
+                            _project.getBranchNames(function(err,names){
+                                if(!err && names){
+                                    var firstName = null;
 
-                                for(var i in names){
-                                    if(!firstName){
-                                        firstName = i;
-                                    }
-                                    if(i === 'master'){
-                                        firstName = i;
-                                        break;
-                                    }
-                                }
-
-                                if(firstName){
-                                    branchWatcher(firstName,function(err){
-                                        if(!err){
-                                            _self.dispatchEvent(_self.events.BRANCH_CHANGED, _branch);
-                                            callback(null);
-                                        } else {
-                                            logger.error('The branch '+firstName+' of project '+name+' cannot be selected! ['+JSON.stringify(err)+']');
-                                            callback(err);
+                                    for(var i in names){
+                                        if(!firstName){
+                                            firstName = i;
                                         }
-                                    });
+                                        if(i === 'master'){
+                                            firstName = i;
+                                            break;
+                                        }
+                                    }
+
+                                    if(firstName){
+                                        branchWatcher(firstName,function(err){
+                                            if(!err){
+                                                _self.dispatchEvent(_self.events.BRANCH_CHANGED, _branch);
+                                                callback(null);
+                                            } else {
+                                                logger.error('The branch '+firstName+' of project '+name+' cannot be selected! ['+JSON.stringify(err)+']');
+                                                callback(err);
+                                            }
+                                        });
+                                    } else {
+                                        //we should try the latest commit
+                                        viewLatestCommit(callback);
+                                    }
                                 } else {
                                     //we should try the latest commit
                                     viewLatestCommit(callback);
                                 }
-                            } else {
-                                //we should try the latest commit
-                                viewLatestCommit(callback);
-                            }
+                            });
                         });
                     } else {
                         logger.error('The project '+name+' cannot be opened! ['+JSON.stringify(err)+']');
@@ -512,13 +499,8 @@ define([
                     }
                     // TODO events.push({etype:'complete',eid:null});
 
-                    if(_users[i].ONEEVENT){
-                        _users[i].UI.onOneEvent(events);
-                    } else {
-                        for(j=0;j<events.length;j++){
-                            _users[i].UI.onEvent(events[j].etype,events[j].eid);
-                        }
-                    }
+
+                    _users[i].FN(events);
                     _users[i].PATTERNS = {};
                     _users[i].PATHS = {};
                     _users[i].SENDEVENTS = true;
@@ -531,7 +513,7 @@ define([
             function closeOpenedProject(callback){
                 callback = callback || function(){};
                 var returning = function(e){
-                    clearSelectedObjectId();
+
                     _projectName = null;
                     _inTransaction = false;
                     _core = null;
@@ -542,6 +524,7 @@ define([
                     _msg = "";
                     _recentCommits = [];
                     _viewer = false;
+                    _readOnlyProject = false;
                     _loadNodes = {};
                     _loadError = 0;
                     _offline = false;
@@ -586,6 +569,18 @@ define([
                 return modifiedNodes;
             }
             //this is just a first brute implementation it needs serious optimization!!!
+            function fitsInPatternTypes(path,pattern){
+                if(pattern.items && pattern.items.length > 0){
+                    for(var i=0;i<pattern.items.length;i++){
+                        if(META.isTypeOf(path,pattern.items[i])){
+                            return true;
+                        }
+                    }
+                    return false;
+                } else {
+                    return true;
+                }
+            }
             function patternToPaths(patternId,pattern,pathsSoFar){
                 if(_nodes[patternId]){
                     pathsSoFar[patternId] = true;
@@ -594,7 +589,9 @@ define([
                         var subPattern = COPY(pattern);
                         subPattern.children--;
                         for(var i=0;i<children.length;i++){
-                            patternToPaths(children[i],subPattern,pathsSoFar);
+                            if(fitsInPatternTypes(children[i],pattern)){
+                                patternToPaths(children[i],subPattern,pathsSoFar);
+                            }
                         }
                     }
                 } else{
@@ -642,13 +639,8 @@ define([
                     } else {
                         // TODO events.push({etype:'complete',eid:null});
                     }
-                    if(_users[userId].ONEEVENT){
-                        _users[userId].UI.onOneEvent(events);
-                    } else {
-                        for(i=0;i<events.length;i++){
-                            _users[userId].UI.onEvent(events[i].etype,events[i].eid);
-                        }
-                    }
+
+                    _users[userId].FN(events);
                 }
             }
             function storeNode(node,basic){
@@ -710,10 +702,10 @@ define([
                     baseLoaded();
                 } else {
                     var base = null;
-                    if(_loadNodes['root']){
-                        base = _loadNodes['root'].node;
-                    } else if(_nodes['root']){
-                        base = _nodes['root'].node;
+                    if(_loadNodes[ROOT_PATH]){
+                        base = _loadNodes[ROOT_PATH].node;
+                    } else if(_nodes[ROOT_PATH]){
+                        base = _nodes[ROOT_PATH].node;
                     }
                     core.loadByPath(base,id,function(err,node){
                         if(!err && node && !core.isEmpty(node)){
@@ -780,7 +772,7 @@ define([
                             userEvents(i,modifiedPaths);
                         }
                         _loadError = 0;
-                    } else if(_loadNodes['root']){
+                    } else if(_loadNodes[ROOT_PATH]){
                         //we left the stuff in the loading rack, probably because there were no _nodes beforehand
                         _nodes = _loadNodes;
                         _loadNodes = {};
@@ -837,12 +829,12 @@ define([
 
             function saveRoot(msg,callback){
                 callback = callback || function(){};
-                if(!_viewer){
+                if(!_viewer && !_readOnlyProject){
                     _msg +="\n"+msg;
                     if(!_inTransaction){
                         ASSERT(_project && _core && _branch);
-                        _core.persist(_nodes['root'].node,function(err){});
-                        var newRootHash = _core.getHash(_nodes['root'].node);
+                        _core.persist(_nodes[ROOT_PATH].node,function(err){});
+                        var newRootHash = _core.getHash(_nodes[ROOT_PATH].node);
                         var newCommitHash = _project.makeCommit([_recentCommits[0]],newRootHash,_msg,function(err){
                             //TODO now what??? - could we end up here?
                         });
@@ -854,7 +846,7 @@ define([
                         });
                         loading(newRootHash);
                     } else {
-                        _core.persist(_nodes['root'].node,function(err){});
+                        _core.persist(_nodes[ROOT_PATH].node,function(err){});
                     }
                 } else {
                     _msg="";
@@ -884,6 +876,36 @@ define([
                 } else {
                     callback(new Error('there is no open database connection!'));
                 }
+            }
+            function getFullProjectListAsync(callback){
+                _database.getProjectNames(function(err,names){
+                    if(!err && names){
+                        var wait = names.length || 0;
+                        var fullList = {};
+                        if(wait > 0){
+                            var getProjectAuthInfo = function(name,cb){
+                                _database.getAuthorizationInfo(name,function(err,authObj){
+                                    if(!err && authObj){
+                                        fullList[name] = authObj;
+                                    }
+                                    cb(err);
+                                });
+                            };
+
+                            for(var i=0;i<names.length;i++){
+                                getProjectAuthInfo(names[i],function(err){
+                                    if(--wait === 0){
+                                        callback(null,fullList);
+                                    }
+                                })
+                            }
+                        } else {
+                            callback(null,{});
+                        }
+                    } else {
+                        callback(err,{});
+                    }
+                });
             }
             function selectProjectAsync(projectname,callback) {
                 if(_database){
@@ -1111,10 +1133,13 @@ define([
                 }
             }
             function connectToDatabaseAsync(options,callback){
+                var oldcallback = callback;
+                callback = function(err){
+                    _TOKEN = tokenWathcer();
+                    oldcallback(err);
+                }; //we add tokenWatcher start at this point
                 options = options || {};
                 callback = callback || function(){};
-                options.host = options.host || _configuration.host;
-                options.port = options.port || _configuration.port;
                 options.open = (options.open !== undefined || options.open !== null) ? options.open : false;
                 options.project = options.project || null;
                 if(_database){
@@ -1232,7 +1257,7 @@ define([
                     }
                 }
 
-                if(pathsToCopy.length > 0 && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                if(pathsToCopy.length > 0 && typeof parameters.parentId === 'string' && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                     //collecting nodes under tempFrom
                     var tempFrom = _core.createNode({parent:_nodes[parameters.parentId].node});
                     for(var i=0;i<pathsToCopy.length;i++){
@@ -1281,7 +1306,7 @@ define([
                     }
                 }
 
-                if(pathsToMove.length > 0 && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                if(pathsToMove.length > 0 && typeof parameters.parentId === 'string' && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                     for(var i=0;i<pathsToMove.length;i++){
                         if(_nodes[pathsToMove[i]] && typeof _nodes[pathsToMove[i]].node === 'object'){
                             var newNode = _core.moveNode(_nodes[pathsToMove[i]].node,_nodes[parameters.parentId].node);
@@ -1313,7 +1338,7 @@ define([
                         pathsToCopy.push(i);
                     }
                 }
-                if(pathsToCopy.length > 0 && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                if(pathsToCopy.length > 0 && typeof parameters.parentId === 'string' && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                     for(var i=0;i<pathsToCopy.length;i++){
                         if(_nodes[pathsToCopy[i]] && typeof _nodes[pathsToCopy[i]].node === 'object'){
                             var node = _core.createNode({parent:_nodes[parameters.parentId].node,base:_nodes[pathsToCopy[i]].node});
@@ -1345,15 +1370,13 @@ define([
                     }
                 }
                 
-                if(pathsToCopy.length > 0 && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                if(pathsToCopy.length > 0 && typeof parameters.parentId === 'string' && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                     //collecting nodes under tempFrom
                     var tempFrom = _core.createNode({parent:_nodes[parameters.parentId].node,base:null});
                     for(var i=0;i<pathsToCopy.length;i++){
-                        console.log('kecso',001,pathsToCopy[i]);
                         if(_nodes[pathsToCopy[i]] && typeof _nodes[pathsToCopy[i]].node === 'object'){
                             returnParameters[pathsToCopy[i]] = {'1stparent':_core.getParent(_nodes[pathsToCopy[i]].node),'1st':_core.moveNode(_nodes[pathsToCopy[i]].node,tempFrom)};
                             returnParameters[pathsToCopy[i]]['1strelid'] = _core.getRelid(returnParameters[pathsToCopy[i]]['1st']);
-                            console.log('kecso',002,pathsToCopy[i],returnParameters[pathsToCopy[i]]['1strelid']);
                         }
                     }
                     var tempTo = _core.createNode({parent:_nodes[parameters.parentId].node, base:tempFrom});
@@ -1369,11 +1392,9 @@ define([
                     delete tempFrom;
 
                     for(var i in returnParameters){
-                        console.log('kecso',003,i);
                         var child = _core.getChild(tempTo,returnParameters[i]['1strelid']);
                         var finalNode = _core.moveNode(child,_nodes[parameters.parentId].node);
                         returnParameters[i] = storeNode(finalNode);
-                        console.log('kecso',004,i,returnParameters[i]);
                         if(parameters[i]){
                             for(var j in parameters[i].attributes){
                                 _core.setAttribute(finalNode,j,parameters[i].attributes[j]);
@@ -1452,12 +1473,12 @@ define([
                 var newID;
 
                 if(_core){
-                    if(parameters.parentId && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                    if(typeof parameters.parentId === 'string'  && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                         var baseNode = null;
                         if(_nodes[parameters.baseId]){
                             baseNode = _nodes[parameters.baseId].node || baseNode;
                         }
-                        var child = _core.createNode({parent:_nodes[parameters.parentId].node, base:baseNode});
+                        var child = _core.createNode({parent:_nodes[parameters.parentId].node, base:baseNode, guid:parameters.guid, relid:parameters.relid});
                         if (parameters.position) {
                             _core.setRegistry(child,"position", { "x": parameters.position.x || 100, "y": parameters.position.y || 100});
                         } else {
@@ -1492,7 +1513,7 @@ define([
 
             function _copyMoreNodes(parameters){
                 var pathestocopy = [];
-                if(parameters.parentId && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
+                if(typeof parameters.parentId === 'string' && _nodes[parameters.parentId] && typeof _nodes[parameters.parentId].node === 'object'){
                     for(var i in parameters){
                         if(i !== "parentId"){
                             pathestocopy.push(i);
@@ -1665,9 +1686,11 @@ define([
             }
 
             //territory functions
-            function addUI(ui, oneevent, guid) {
+            function addUI(ui, fn, guid) {
+                ASSERT(fn);
+                ASSERT(typeof fn === 'function');
                 guid = guid || GUID();
-                _users[guid] = {type:'notused', UI:ui, PATTERNS:{}, PATHS:{}, ONEEVENT:oneevent ? true : false, SENDEVENTS:true};
+                _users[guid] = {type:'notused', UI:ui, PATTERNS:{}, PATHS:{}, SENDEVENTS:true, FN: fn};
                 return guid;
             }
             function removeUI(guid) {
@@ -1675,14 +1698,16 @@ define([
             }
             function updateTerritory(guid, patterns) {
                 if(_project){
-                    if(_nodes['root']){
+                    if(_nodes[ROOT_PATH]){
                         //this has to be optimized
                         var missing = 0;
                         var error = null;
                         var allDone = function(){
-                            _users[guid].PATTERNS = patterns;
-                            if(!error){
-                                userEvents(guid,[]);
+                            if(_users[guid]){
+                                _users[guid].PATTERNS = JSON.parse(JSON.stringify(patterns));
+                                if(!error){
+                                    userEvents(guid,[]);
+                                }
                             }
                         };
                         for(var i in patterns){
@@ -1702,17 +1727,17 @@ define([
                         }
                     } else {
                         //something funny is going on
-                        if(_loadNodes['root']){
+                        if(_loadNodes[ROOT_PATH]){
                             //probably we are in the loading process, so we should redo this update when the loading finishes
                             setTimeout(updateTerritory,100,guid,patterns);
                         } else {
                             //root is not in nodes and has not even started to load it yet...
-                            _users[guid].PATTERNS = patterns;
+                            _users[guid].PATTERNS = JSON.parse(JSON.stringify(patterns));
                         }
                     }
                 } else {
                     //we should update the patterns, but that is all
-                    _users[guid].PATTERNS = patterns;
+                    _users[guid].PATTERNS = JSON.parse(JSON.stringify(patterns));
                 }
             }
 
@@ -1735,6 +1760,10 @@ define([
                     return _id;
                 };
 
+                var getGuid = function(){
+                    return _core.getGuid(_nodes[_id].node);
+                };
+
                 var getChildrenIds = function(){
                     return _core.getChildrenPaths(_nodes[_id].node);
                 };
@@ -1751,9 +1780,19 @@ define([
                 var getAttribute = function(name){
                     return _core.getAttribute(_nodes[_id].node,name);
                 };
+                var getOwnAttribute = function(name){
+                    return _core.getOwnAttribute(_nodes[_id].node,name);
+                };
 
                 var getEditableAttribute = function(name){
                     var value = _core.getAttribute(_nodes[_id].node,name);
+                    if(typeof value === 'object'){
+                        return JSON.parse(JSON.stringify(value));
+                    }
+                    return value;
+                };
+                var getOwnEditableAttribute = function(name){
+                    var value = _core.getOwnAttribute(_nodes[_id].node,name);
                     if(typeof value === 'object'){
                         return JSON.parse(JSON.stringify(value));
                     }
@@ -1763,9 +1802,19 @@ define([
                 var getRegistry = function(name){
                     return _core.getRegistry(_nodes[_id].node,name);
                 };
+                var getOwnRegistry = function(name){
+                    return _core.getOwnRegistry(_nodes[_id].node,name);
+                };
 
                 var getEditableRegistry = function(name){
                     var value = _core.getRegistry(_nodes[_id].node,name);
+                    if(typeof value === 'object'){
+                        return JSON.parse(JSON.stringify(value));
+                    }
+                    return value;
+                };
+                var getOwnEditableRegistry = function(name){
+                    var value = _core.getOwnRegistry(_nodes[_id].node,name);
                     if(typeof value === 'object'){
                         return JSON.parse(JSON.stringify(value));
                     }
@@ -1776,17 +1825,30 @@ define([
                     //return _core.getPointerPath(_nodes[_id].node,name);
                     return {to:_core.getPointerPath(_nodes[_id].node,name),from:[]};
                 };
+                var getOwnPointer = function(name){
+                    return {to:_core.getOwnPointerPath(_nodes[_id].node,name),from:[]};
+                };
 
                 var getPointerNames = function(){
                     return _core.getPointerNames(_nodes[_id].node);
+                };
+                var getOwnPointerNames = function(){
+                    return _core.getOwnPointerNames(_nodes[_id].node);
                 };
 
                 var getAttributeNames = function(){
                     return _core.getAttributeNames(_nodes[_id].node);
                 };
+                var getOwnAttributeNames = function(){
+                    return _core.getOwnAttributeNames(_nodes[_id].node);
+                };
+
 
                 var getRegistryNames = function(){
                     return _core.getRegistryNames(_nodes[_id].node);
+                };
+                var getOwnRegistryNames = function(){
+                    return _core.getOwnRegistryNames(_nodes[_id].node);
                 };
 
                 //SET
@@ -1871,41 +1933,40 @@ define([
                 //ASSERT(_nodes[_id]);
 
                 var printData = function(){
-                    //TODO - what to print here - now we use as testing method...
-                    console.log('printing info of node '+_id);
-                    console.log('not implemented');
-                    console.log('printing info of node '+_id+' done');
+                    //probably we will still use it for test purposes, but now it goes officially into printing the node's json representation
+                    ToJson(_core,_nodes[_id].node,"",'guid',function(err,jNode){
+                        console.log('node in JSON format[status = ',err,']:',jNode);
+                    });
+                };
 
-                    //testfunction placeholder
-                    console.log(_core.getConstraintNames(_nodes[_id].node));
-                    _core.setConstraint(_nodes[_id].node,"proba",{});
-                    console.log(_core.getConstraintNames(_nodes[_id].node));
-                    _core.delConstraint(_nodes[_id].node,"proba");
-                    console.log(_core.getConstraintNames(_nodes[_id].node));
-                    _database.getAuthorizationInfo(_projectName,function(err,authInfo){
-                        if(err){
-                            console.log('kecso ehh',err);
-                        } else {
-                            console.log('kecso yeah',authInfo);
-                        }
-                    })
+                var toString = function () {
+                    return _core.getAttribute(_nodes[_id].node, 'name') + ' (' + _id +')';
                 };
 
                 if(_nodes[_id]){
                     return {
-                        getParentId : getParentId,
-                        getId       : getId,
-                        getChildrenIds : getChildrenIds,
-                        getBaseId : getBaseId,
-                        getInheritorIds : getInheritorIds,
-                        getAttribute : getAttribute,
-                        getEditableAttribute: getEditableAttribute,
-                        getRegistry : getRegistry,
-                        getEditableRegistry : getEditableRegistry,
-                        getPointer : getPointer,
-                        getPointerNames : getPointerNames,
-                        getAttributeNames : getAttributeNames,
-                        getRegistryNames : getRegistryNames,
+                        getParentId             : getParentId,
+                        getId                   : getId,
+                        getGuid                 : getGuid,
+                        getChildrenIds          : getChildrenIds,
+                        getBaseId               : getBaseId,
+                        getInheritorIds         : getInheritorIds,
+                        getAttribute            : getAttribute,
+                        getEditableAttribute    : getEditableAttribute,
+                        getRegistry             : getRegistry,
+                        getEditableRegistry     : getEditableRegistry,
+                        getOwnAttribute         : getOwnAttribute,
+                        getOwnEditableAttribute : getOwnEditableAttribute,
+                        getOwnRegistry          : getOwnRegistry,
+                        getOwnEditableRegistry  : getOwnEditableRegistry,
+                        getPointer              : getPointer,
+                        getPointerNames         : getPointerNames,
+                        getAttributeNames       : getAttributeNames,
+                        getRegistryNames        : getRegistryNames,
+                        getOwnAttributeNames    : getOwnAttributeNames,
+                        getOwnRegistryNames     : getOwnRegistryNames,
+                        getOwnPointer           : getOwnPointer,
+                        getOwnPointerNames      : getOwnPointerNames,
 
                         //SetFunctions
                         getMemberIds               : getMemberIds,
@@ -1918,19 +1979,20 @@ define([
                         getEditableMemberRegistry  : getEditableMemberRegistry,
 
                         //META functions
-                        getValidChildrenTypes : getValidChildrenTypes,
-                        getAttributeDescriptor         : getAttributeDescriptor,
-                        getEditableAttributeDescriptor : getEditableAttributeDescriptor,
-                        getPointerDescriptor           : getPointerDescriptor,
-                        getEditablePointerDescriptor   : getEditablePointerDescriptor,
-                        getChildrenMetaDescriptor      : getChildrenMetaDescriptor,
-                        getEditableChildrenMetaDescriptor      : getEditableChildrenMetaDescriptor,
+                        getValidChildrenTypes             : getValidChildrenTypes,
+                        getAttributeDescriptor            : getAttributeDescriptor,
+                        getEditableAttributeDescriptor    : getEditableAttributeDescriptor,
+                        getPointerDescriptor              : getPointerDescriptor,
+                        getEditablePointerDescriptor      : getEditablePointerDescriptor,
+                        getChildrenMetaDescriptor         : getChildrenMetaDescriptor,
+                        getEditableChildrenMetaDescriptor : getEditableChildrenMetaDescriptor,
 
                         //constraint functions
                         getConstraintNames : getConstraintNames,
-                        getConstraint : getConstraint,
+                        getConstraint      : getConstraint,
 
-                        printData: printData
+                        printData : printData,
+                        toString: toString
 
                     }
                 }
@@ -1956,33 +2018,145 @@ define([
                 });
             }
 
+            //export and import functions
+            function exportItems(paths,callback){
+                var nodes = [];
+                for(var i=0;i<paths.length;i++){
+                    if(_nodes[paths[i]]){
+                        nodes.push(_nodes[paths[i]].node);
+                    } else {
+                        callback('invalid node');
+                        return;
+                    }
+                }
+
+                //DumpMore(_core,nodes,"",'guid',callback);
+                _database.simpleRequest({command:'dumpMoreNodes',name:_projectName,hash:_core.getHash(_nodes[ROOT_PATH].node),nodes:paths},function(err,resId){
+                    if(err){
+                        callback(err);
+                        _database.simpleResult(resId,callback);
+                    } else {
+                        _database.simpleResult(resId,callback);
+                    }
+                });
+            }
+            function getExportItemsUrlAsync(paths,filename,callback){
+                _database.simpleRequest({command:'dumpMoreNodes',name:_projectName,hash:_core.getHash(_nodes[ROOT_PATH].node),nodes:paths},function(err,resId){
+                    if(err){
+                        callback(err);
+                    } else {
+                        callback(null,window.location.protocol + '//' + window.location.host +'/worker/simpleResult/'+resId+'/'+filename);
+                    }
+                });
+            }
+            /*function getExportItemsUrlAsync(paths,filename,callback){
+                getExternalInterpreterConfigUrlAsync(paths[0],"config_",callback);
+            }*/
+            function getExternalInterpreterConfigUrlAsync(selectedItemsPaths,filename,callback){
+                var config = {};
+                config.host = window.location.protocol+"//"+window.location.host;
+                config.project = _projectName;
+                config.token = _TOKEN.getToken();
+                config.selected = plainUrl('node',selectedItemsPaths[0] || "");
+                config.commit = URL.addSpecialChars(_recentCommits[0] || "");
+                config.root = plainUrl('node',"");
+                config.branch = _branch
+                _database.simpleRequest({command:'generateJsonURL',object:config},function(err,resId){
+                    if(err){
+                        callback(err);
+                    } else {
+                        callback(null,window.location.protocol + '//' + window.location.host +'/worker/simpleResult/'+resId+'/'+filename);
+                    }
+                });
+            }
+            function dumpNodeAsync(path,callback){
+                if(_nodes[path]){
+                    Dump(_core,_nodes[path].node,"",'guid',callback);
+                } else {
+                    callback('unknown object',null);
+                }
+            }
+            function importNodeAsync(parentPath,jNode,callback){
+                var node = null;
+                if(_nodes[parentPath]){
+                    node = _nodes[parentPath].node;
+                }
+                Import(_core,_nodes[parentPath].node,jNode,function(err){
+                    if(err){
+                        callback(err);
+                    } else {
+                        saveRoot('importNode under '+parentPath, callback);
+                    }
+                });
+            }
+            function mergeNodeAsync(parentPath,jNode,callback){
+                var node = null;
+                if(_nodes[parentPath]){
+                    node = _nodes[parentPath].node;
+                }
+                MergeImport(_core,_nodes[parentPath].node,jNode,function(err){
+                    if(err){
+                        callback(err);
+                    } else {
+                        saveRoot('importNode under '+parentPath, callback);
+                    }
+                });
+            }
+            function createProjectFromFileAsync(projectname,jNode,callback){
+                //if called on an existing project, it will ruin it!!! - although the old commits will be untouched
+                createProjectAsync(projectname,function(err){
+                    selectProjectAsync(projectname,function(err){
+                        MergeImport(_core,null,jNode,function(err,root){
+                            if(err){
+                                callback(err);
+                            } else {
+                                _metaNodes[_core.getPath(root)] = root;
+                                _nodes[_core.getPath(root)] = {node:root,hash:""};
+                                saveRoot('import project from file',callback);
+                            }
+                        });
+                    });
+                });
+            }
+            function plainUrl(command,path){
+                if(window && window.location && window.location && _nodes && _nodes[ROOT_PATH]){
+                    var address = window.location.protocol + '//' + window.location.host +'/rest'+(_TOKEN.getToken() === null ? '' : '/'+_TOKEN.getToken())+'/'+command+'/'+_projectName+'/'+URL.addSpecialChars(_core.getHash(_nodes[ROOT_PATH].node))+'/'+URL.addSpecialChars(path);
+                    return address;
+                }
+            }
+            function getDumpURL(path,filepath){
+                filepath = filepath || _projectName+'_'+_branch+'_'+URL.addSpecialChars(path);
+                if(window && window.location && window.location && _nodes && _nodes[ROOT_PATH]){
+                    var address = plainUrl('etf',path)+'/'+filepath;
+                    return address;
+                }
+                return null;
+            }
+
+            function getProjectObject(){
+                return _project;
+            }
             //initialization
             function initialize(){
                 _database = newDatabase();
                 _database.openDatabase(function(err){
                     if(!err){
-                        _database.authenticate(_userName,_privateKey,function(err){
-                            if(!err){
-                                _networkWatcher = networkWatcher();
-                                _database.getProjectNames(function(err,names){
-                                    if(!err && names && names.length>0){
-                                        var projectName = null;
-                                        if(_configuration.project && names.indexOf(_configuration.project) !== -1){
-                                            projectName = _configuration.project;
-                                        } else {
-                                            projectName = names[0];
-                                        }
-                                        openProject(projectName,function(err){
-                                            if(err){
-                                                logger.error('Problem during project opening:'+JSON.stringify(err));
-                                            }
-                                        });
-                                    } else {
-                                        logger.error('Cannot get project names / There is no project on the server');
+                        _networkWatcher = networkWatcher();
+                        _database.getProjectNames(function(err,names){
+                            if(!err && names && names.length>0){
+                                var projectName = null;
+                                if(_configuration.project && names.indexOf(_configuration.project) !== -1){
+                                    projectName = _configuration.project;
+                                } else {
+                                    projectName = names[0];
+                                }
+                                openProject(projectName,function(err){
+                                    if(err){
+                                        logger.error('Problem during project opening:'+JSON.stringify(err));
                                     }
                                 });
                             } else {
-                                logger.error('authentication failed');
+                                logger.error('Cannot get project names / There is no project on the server');
                             }
                         });
                     } else {
@@ -2005,10 +2179,6 @@ define([
                 removeEventListener: _self.removeEventListener,
                 removeAllEventListeners: _self.removeAllEventListeners,
                 dispatchEvent: _self.dispatchEvent,
-                setSelectedObjectId: setSelectedObjectId,
-                clearSelectedObjectId: clearSelectedObjectId,
-                setPropertyEditorIdList: setPropertyEditorIdList,
-                clearPropertyEditorIdList: clearPropertyEditorIdList,
                 connect: connect,
 
                 getUserId : getUserId,
@@ -2017,6 +2187,7 @@ define([
                 getActiveProject: getActiveProject,
                 getAvailableProjectsAsync: getAvailableProjectsAsync,
                 getViewableProjectsAsync: getViewableProjectsAsync,
+                getFullProjectListAsync: getFullProjectListAsync,
                 getProjectAuthInfoAsync: getProjectAuthInfoAsync,
                 connectToDatabaseAsync: connectToDatabaseAsync,
                 selectProjectAsync: selectProjectAsync,
@@ -2035,9 +2206,8 @@ define([
                 commitAsync: commitAsync,
                 goOffline: goOffline,
                 goOnline: goOnline,
-                isReadOnly: function(){ return _viewer;},//TODO should be removed
-                getActiveSelection: getActiveSelection,
-
+                isProjectReadOnly: function(){ return _readOnlyProject;},
+                isCommitReadOnly: function(){return _viewer;},
 
                 //MGA
                 startTransaction: startTransaction,
@@ -2073,37 +2243,57 @@ define([
                 delBase: delBase,
 
                 //we simply propagate the functions of META
-                getMeta : META.getMeta,
-                setMeta : META.setMeta,
-                getChildrenMeta: META.getChildrenMeta,
-                setChildrenMeta: META.setChildrenMeta,
-                getChildrenMetaAttribute: META.getChildrenMetaAttribute,
-                setChildrenMetaAttribute: META.setChildrenMetaAttribute,
-                getValidChildrenItems: META.getValidChildrenItems,
-                updateValidChildrenItem: META.updateValidChildrenItem,
-                removeValidChildrenItem: META.removeValidChildrenItem,
-                getAttributeSchema: META.getAttributeSchema,
-                setAttributeSchema: META.setAttributeSchema,
-                removeAttributeSchema: META.removeAttributeSchema,
-                getPointerMeta: META.getPointerMeta,
-                setPointerMeta: META.setPointerMeta,
-                getValidTargetItems: META.getValidTargetItems,
-                updateValidTargetItem: META.updateValidTargetItem,
-                removeValidTargetItem: META.removeValidTargetItem,
-                deleteMetaPointer: META.deleteMetaPointer,
-                getOwnValidChildrenTypes: META.getOwnValidChildrenTypes,
-                getOwnValidTargetTypes: META.getOwnValidTargetTypes,
-                isValidChild: META.isValidChild,
-                isValidTarget: META.isValidTarget,
-                isValidAttribute: META.isValidAttribute,
-                getValidChildrenTypes: META.getValidChildrenTypes,
-                getValidTargetTypes: META.getValidTargetTypes,
-                hasOwnMetaRules : META.hasOwnMetaRules,
-                filterValidTarget : META.filterValidTarget,
-                isTypeOf: META.isTypeOf,               
-                getValidAttributeNames   : META.getValidAttributeNames,
-                getOwnValidAttributeNames: META.getOwnValidAttributeNames,
+                getMeta                   : META.getMeta,
+                setMeta                   : META.setMeta,
+                getChildrenMeta           : META.getChildrenMeta,
+                setChildrenMeta           : META.setChildrenMeta,
+                getChildrenMetaAttribute  : META.getChildrenMetaAttribute,
+                setChildrenMetaAttribute  : META.setChildrenMetaAttribute,
+                getValidChildrenItems     : META.getValidChildrenItems,
+                updateValidChildrenItem   : META.updateValidChildrenItem,
+                removeValidChildrenItem   : META.removeValidChildrenItem,
+                getAttributeSchema        : META.getAttributeSchema,
+                setAttributeSchema        : META.setAttributeSchema,
+                removeAttributeSchema     : META.removeAttributeSchema,
+                getPointerMeta            : META.getPointerMeta,
+                setPointerMeta            : META.setPointerMeta,
+                getValidTargetItems       : META.getValidTargetItems,
+                updateValidTargetItem     : META.updateValidTargetItem,
+                removeValidTargetItem     : META.removeValidTargetItem,
+                deleteMetaPointer         : META.deleteMetaPointer,
+                getOwnValidChildrenTypes  : META.getOwnValidChildrenTypes,
+                getOwnValidTargetTypes    : META.getOwnValidTargetTypes,
+                isValidChild              : META.isValidChild,
+                isValidTarget             : META.isValidTarget,
+                isValidAttribute          : META.isValidAttribute,
+                getValidChildrenTypes     : META.getValidChildrenTypes,
+                getValidTargetTypes       : META.getValidTargetTypes,
+                hasOwnMetaRules           : META.hasOwnMetaRules,
+                filterValidTarget         : META.filterValidTarget,
+                isTypeOf                  : META.isTypeOf,
+                getValidAttributeNames    : META.getValidAttributeNames,
+                getOwnValidAttributeNames : META.getOwnValidAttributeNames,
+                getMetaAspectNames        : META.getMetaAspectNames,
+                getOwnMetaAspectNames     : META.getOwnMetaAspectNames,
+                getMetaAspect             : META.getMetaAspect,
+                setMetaAspect             : META.setMetaAspect,
+                deleteMetaAspect          : META.deleteMetaAspect,
+                getAspectTerritoryPattern : META.getAspectTerritoryPattern,
+
                 //end of META functions
+
+                //interpreters
+                getProjectObject: getProjectObject,
+
+                //JSON functions
+                exportItems: exportItems,
+                getExportItemsUrlAsync: getExportItemsUrlAsync,
+                getExternalInterpreterConfigUrlAsync: getExternalInterpreterConfigUrlAsync,
+                dumpNodeAsync: dumpNodeAsync,
+                importNodeAsync: importNodeAsync,
+                mergeNodeAsync: mergeNodeAsync,
+                createProjectFromFileAsync: createProjectFromFileAsync,
+                getDumpURL: getDumpURL,
 
                 //constraint
                 setConstraint: setConstraint,

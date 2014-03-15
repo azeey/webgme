@@ -2,22 +2,25 @@
 
 define(['logManager',
     'loaderProgressBar',
+    'js/Constants',
     'js/PanelBase/PanelBaseWithHeader',
     'js/Panels/SplitPanel/SplitPanel',
     'text!js/Visualizers.json',
     'css!/css/Panels/Visualizer/VisualizerPanel'], function (logManager,
                                     LoaderProgressBar,
+                                    CONSTANTS,
                                     PanelBaseWithHeader,
                                     SplitPanel,
                                     VisualizersJSON) {
 
-    var VisualizerPanel;
+    var VisualizerPanel,
+        DEFAULT_VISUALIZER = 'ModelEditor';
 
     VisualizerPanel = function (layoutManager, params) {
         var options = {};
         //set properties from options
         options[PanelBaseWithHeader.OPTIONS.LOGGER_INSTANCE_NAME] = "Visualizer";
-        options[PanelBaseWithHeader.OPTIONS.HEADER_TITLE] = true;
+        options[PanelBaseWithHeader.OPTIONS.HEADER_TITLE] = false;
 
         //call parent's constructor
         PanelBaseWithHeader.apply(this, [options]);
@@ -76,8 +79,20 @@ define(['logManager',
             event.preventDefault();
         });
 
-        this._client.addEventListener(this._client.events.SELECTEDOBJECT_CHANGED, function (__project, nodeId) {
-            self.selectedObjectChanged(nodeId);
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, function (model, activeObjectId) {
+            self.selectedObjectChanged(activeObjectId);
+        });
+
+        this._client.addEventListener(this._client.events.PROJECT_CLOSED, function (__project, nodeId) {
+            self._p2Editor(false);
+        });
+
+        this._client.addEventListener(this._client.events.PROJECT_OPENED, function (__project, nodeId) {
+            self._p2Editor(false);
+        });
+
+        this._client.addEventListener(this._client.events.BRANCH_CHANGED, function (__project, nodeId) {
+            self._p2Editor(false);
         });
 
         this._splitPanel = new SplitPanel();
@@ -88,7 +103,7 @@ define(['logManager',
         var self = this;
 
         this.addRange(JSON.parse(VisualizersJSON), function () {
-            self._setActiveVisualizer('ModelEditor', self._ul1);
+            self._setActiveVisualizer(DEFAULT_VISUALIZER, self._ul1);
         });
     };
 
@@ -100,7 +115,7 @@ define(['logManager',
         if (this._activeVisualizer[panel] !== visualizer && this._visualizers.hasOwnProperty(visualizer)) {
 
             //destroy current visualizer
-            if (this._activePanel[panel] && this._activePanel[panel].destroy) {
+            if (this._activePanel[panel]) {
                 this._activePanel[panel].destroy();
             }
 
@@ -117,8 +132,8 @@ define(['logManager',
                     this._splitPanel.setPanel(this._activePanel[panel], panel);
                 }
 
-                if (this._currentNodeID) {
-                    if (this._activePanel[panel] && this._activePanel[panel].control) {
+                if (this._currentNodeID || this._currentNodeID === CONSTANTS.PROJECT_ROOT_ID) {
+                    if (this._activePanel[panel] && this._activePanel[panel].control && _.isFunction(this._activePanel[panel].control.selectedObjectChanged)) {
                         this._activePanel[panel].control.selectedObjectChanged(this._currentNodeID);
                     }
                 }
@@ -249,9 +264,11 @@ define(['logManager',
             this._activeVisualizer[panel] = null;
 
 
-            this._panel2VisContainer.remove();
-            this._panel2VisContainer = undefined;
-            this._splitPanel.deletePanel('p2');
+            if (this._panel2VisContainer) {
+                this._panel2VisContainer.remove();
+                this._panel2VisContainer = undefined;
+                this._splitPanel.deletePanel('p2');
+            }
         }
     };
 

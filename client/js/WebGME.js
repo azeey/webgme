@@ -1,32 +1,51 @@
 "use strict";
 
-var WebGMEGlobal = { 'version': 'DEMO - 12/16/2013',
+var WebGMEGlobal = { 'version': 'x',    //will be set from Node's package.json
     'SUPPORTS_TOUCH': 'ontouchstart' in window || navigator.msMaxTouchPoints }; //touch device detection}
 
 // let require load all the toplevel needed script and call us on domReady
 define(['logManager',
     'bin/getconfig',
+    'text!package.json',
     'js/client',
+    'js/Constants',
     'clientUtil',
     'js/Utils/GMEConcepts',
+    'js/Utils/GMEVisualConcepts',
+    'js/Utils/ExportManager',
+    'js/Utils/ImportManager',
+    'js/Utils/StateManager',
     'js/LayoutManager/LayoutManager',
     'js/Decorators/DecoratorManager',
     'js/KeyboardManager/KeyboardManager',
     'js/PanelManager/PanelManager',
     './WebGME.History',
     'js/Utils/METAAspectHelper',
-    'js/ConstraintManager/ConstraintManager'], function (logManager,
+    'js/Utils/PreferencesHelper',
+    'js/ConstraintManager/ConstraintManager',
+    'js/Utils/InterpreterManager'], function (logManager,
                                             CONFIG,
+                                            packagejson,
                                             Client,
+                                            CONSTANTS,
                                             util,
                                             GMEConcepts,
+                                            GMEVisualConcepts,
+                                            ExportManager,
+                                            ImportManager,
+                                            StateManager,
                                             LayoutManager,
                                             DecoratorManager,
                                             KeyboardManager,
                                             PanelManager,
                                             WebGMEHistory,
                                             METAAspectHelper,
-                                            ConstraintManager) {
+                                            PreferencesHelper,
+                                            ConstraintManager,
+                                            InterpreterManager) {
+
+    var npmJSON = JSON.parse(packagejson);
+    WebGMEGlobal.version = npmJSON.version;
 
     var _webGMEStart = function () {
         var lm,
@@ -50,16 +69,35 @@ define(['logManager',
 
             WebGMEGlobal.ConstraintManager = new ConstraintManager(client);
 
-            WebGMEHistory.setClient(client);
+            WebGMEGlobal.InterpreterManager = new InterpreterManager(client);
+
+            Object.defineProperty(WebGMEGlobal, 'State', {value : StateManager.initialize(),
+                writable : false,
+                enumerable : true,
+                configurable : false});
+
+            WebGMEHistory.initialize();
 
             GMEConcepts.initialize(client);
+            GMEVisualConcepts.initialize(client);
 
             METAAspectHelper.initialize(client);
+            PreferencesHelper.initialize(client);
+
+            ExportManager.initialize(client);
+            ImportManager.initialize(client);
 
             //hook up branch changed to set read-only mode on panels
             client.addEventListener(client.events.BRANCH_CHANGED, function (__project, branchName) {
-                var readOnly = branchName === null || branchName === undefined;
-                lm.setPanelReadOnly(readOnly);
+                lm.setPanelReadOnly(client.isCommitReadOnly() || client.isProjectReadOnly());
+            });
+            client.addEventListener(client.events.PROJECT_OPENED, function (__project, projectName) {
+                lm.setPanelReadOnly(client.isProjectReadOnly());
+            });
+
+            //on project close clear the current state
+            client.addEventListener(client.events.PROJECT_CLOSED, function (__project, projectName) {
+                WebGMEGlobal.State.clear();
             });
 
             client.decoratorManager = new DecoratorManager();
@@ -88,8 +126,9 @@ define(['logManager',
                 if (panels.length > 0) {
                     loadPanels(panels);
                 } else {
-                    client.connectToDatabaseAsync({'open': true,
-                                                    'project': projectToLoad || CONFIG.project}, function (err) {
+                    projectToLoad = projectToLoad === "" ? CONFIG.project : projectToLoad;
+                    client.connectToDatabaseAsync({'open': projectToLoad,
+                                                    'project': projectToLoad}, function (err) {
                         if (err) {
                             logger.error(err);
                         } else {
@@ -112,8 +151,11 @@ define(['logManager',
 
         selectObject = function () {
             if (objectToLoad && objectToLoad !== "") {
+                if (objectToLoad.toLowerCase() === 'root') {
+                    objectToLoad = CONSTANTS.PROJECT_ROOT_ID;
+                }
                 setTimeout(function () {
-                    client.setSelectedObjectId(objectToLoad);
+                    WebGMEGlobal.State.setActiveObject(objectToLoad);
                 }, 1000);
             }
         };

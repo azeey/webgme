@@ -26,7 +26,7 @@ define([ "util/assert", "util/sha1", "core/future", "core/tasync", 'util/canon' 
 	};
 
 	// make relids deterministic
-	if (true) {
+	if (false) {
 		var nextRelid = 0;
 		createRelid = function (data) {
 			ASSERT(data && typeof data === "object");
@@ -125,6 +125,26 @@ define([ "util/assert", "util/sha1", "core/future", "core/tasync", 'util/canon' 
 
 			return first + second;
 		};
+
+        var getCommonPathPrefixData = function (first, second) {
+            ASSERT(typeof first === "string" && typeof second === "string");
+
+            first = splitPath(first);
+            second = splitPath(second);
+
+            var common = [];
+            for ( var i = 0; first[i] === second[i] && i < first.length; ++i) {
+                common.push(first[i]);
+            }
+
+            return {
+                common: buildPath(common),
+                first: buildPath(first.slice(i)),
+                firstLength: first.length - i,
+                second: buildPath(second.slice(i)),
+                secondLength: second.length - i
+            };
+        };
 
 		// ------- memory management
 
@@ -556,7 +576,7 @@ define([ "util/assert", "util/sha1", "core/future", "core/tasync", 'util/canon' 
 
 		var setProperty = function (node, name, data) {
 			ASSERT(typeof name === "string" && name !== ID_NAME);
-			ASSERT(!__isMutableData(data) && data !== null && data !== undefined);
+			ASSERT(!__isMutableData(data) /*&& data !== null*/ && data !== undefined); //TODO is the 'null' really can be a value of a property???
 
 			node = normalize(node);
 			if (!mutate(node)) {
@@ -864,6 +884,7 @@ define([ "util/assert", "util/sha1", "core/future", "core/tasync", 'util/canon' 
 			splitPath: splitPath,
 			buildPath: buildPath,
 			joinPaths: joinPaths,
+			getCommonPathPrefixData: getCommonPathPrefixData,
 
 			normalize: normalize,
 			getAncestor: getAncestor,

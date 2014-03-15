@@ -40,7 +40,9 @@ requirejs(['logManager',
     'storage/log',
     'auth/sessionstore',
     'auth/vehicleforgeauth',
-    'auth/gmeauth'],function(
+    'auth/gmeauth',
+    'util/newrest',
+    'util/cJson'],function(
     logManager,
     CONFIG,
     Storage,
@@ -50,17 +52,21 @@ requirejs(['logManager',
     Log,
     SStore,
     VFAUTH,
-    GMEAUTH){
+    GMEAUTH,
+    REST,
+    CANON){
     var parameters = CONFIG;
     var logLevel = parameters.loglevel || logManager.logLevels.WARNING;
     var logFile = parameters.logfile || 'server.log';
     logManager.setLogLevel(logLevel);
     logManager.useColors(true);
     logManager.setFileLogPath(logFile);
-    var logger = logManager.create("combined-server");
+    var logger = logManager.create("enhancedServer");
     var iologger = logManager.create("socket.io");
     var sitekey = null;
     var sitecertificate = null;
+    var _REST = null;
+    var canCheckToken = true;
     if(parameters.httpsecure){
         sitekey = require('fs').readFileSync("proba-key.pem");
         sitecertificate = require('fs').readFileSync("proba-cert.pem");
@@ -71,6 +77,20 @@ requirejs(['logManager',
 
     var forge = new VFAUTH({session:__sessionStore});
     var gme = new GMEAUTH({session:__sessionStore,host:parameters.mongoip,port:parameters.mongoport,database:parameters.mongodatabase,guest:parameters.guest});
+
+    //optional config file from command line arguments
+    if(process.argv.length === 3){
+        var cmdConfig = require('fs').readFileSync(process.argv[2]);
+        try{
+            cmdConfig = JSON.parse(cmdConfig);
+            for(var i in cmdConfig){
+                CONFIG[i] = cmdConfig[i];
+            }
+        } catch (e){
+            //TODO
+            logger.error("extra config file read failure: "+e);
+        }
+    }
 
     var globalAuthorization = function(sessionId,projectName,type,callback){
         __sessionStore.get(sessionId,function(err,data){
@@ -94,6 +114,7 @@ requirejs(['logManager',
 
 
 
+
     //for session handling we save the user data to the memory and reuse them in case of need
     var _users = {};
     passport.serializeUser(function(user, done) {
@@ -103,21 +124,55 @@ requirejs(['logManager',
     passport.deserializeUser(function(id, done) {
         done(null,_users[id]);
     });
-
-    passport.use(new stratGugli({
-            returnURL: parameters.host+':'+parameters.port+'/login/google/return',
-            realm: parameters.host+':'+parameters.port
-        },
-        function(identifier, profile, done) {
-            return done(null,{id:profile.emails[0].value});
+    function storeQueryString(req,res,next){
+        if(req.session.originalQuery === undefined){
+            var index = req.url.indexOf('?');
+            req.session.originalQuery = index === -1 ? "" : req.url.substring(index);
         }
-    ));
+        console.log("kecso",req.session.originalQuery);
+        next();
+    }
+    var googleAuthenticaitonSet = false;
+    function checkGoogleAuthentication(req,res,next){
+        if(googleAuthenticaitonSet === true){
+            return next();
+        } else {
+            var protocolPrefix = parameters.httpsecure === true ? 'https://' : 'http://';
+            passport.use(new stratGugli({
+                    returnURL: protocolPrefix+req.headers.host +'/login/google/return',
+                    realm: protocolPrefix+req.headers.host
+                },
+                function(identifier, profile, done) {
+                    return done(null,{id:profile.emails[0].value});
+                }
+            ));
+            googleAuthenticaitonSet = true;
+            return next();
+        }
+    }
+
+    function checkREST(req,res,next){
+        var baseUrl = parameters.httpsecure === true ? 'https://' : 'http://'+req.headers.host+'/rest';
+        if(_REST === null){
+            var restAuthorization;
+            if(parameters.secureREST === true){
+                restAuthorization = gme.tokenAuthorization;
+                baseUrl += '/token';
+            }
+            _REST = new REST({host:parameters.mongoip,port:parameters.mongoport,database:parameters.mongodatabase,baseUrl:baseUrl,authorization:restAuthorization});
+        } else {
+            _REST.setBaseUrl(baseUrl);
+        }
+        return next();
+    }
+
 
     function ensureAuthenticated(req, res, next) {
         if(true === parameters.authentication){
             if(req.isAuthenticated() || (req.session && true === req.session.authenticated)){
                 return next();
             }
+
             res.redirect('/login');
         } else {
             return next();
@@ -136,6 +191,11 @@ requirejs(['logManager',
         }
     }
 
+    function prepClientLogin(req,res,next){
+        req.__gmeAuthFailUrl__ = '/login/client/fail';
+        next();
+    }
+
 
     var staticclientdirpath = path.resolve(__dirname+'./../client');
     var staticdirpath = path.resolve(__dirname+'./..');
@@ -147,7 +207,7 @@ requirejs(['logManager',
         app.use(express.cookieParser());
         app.use(express.bodyParser());
         app.use(express.methodOverride());
-        app.use(express.session({store: __sessionStore, secret: parameters.sessioncookiesecret, key: parameters.sessioncookieid, cookie: { domain:parameters.host} }));
+        app.use(express.session({store: __sessionStore, secret: parameters.sessioncookiesecret, key: parameters.sessioncookieid}));
         app.use(passport.initialize());
         app.use(passport.session());
         app.use(app.router);
@@ -156,7 +216,7 @@ requirejs(['logManager',
 
 
     //starting point
-    app.get('/',checkVF,ensureAuthenticated,function(req,res){
+    app.get('/',storeQueryString,checkVF,ensureAuthenticated,function(req,res){
         res.sendfile(staticclientdirpath+'/index.html',{user:req.user},function(err){
             res.send(404);
         });
@@ -172,55 +232,167 @@ requirejs(['logManager',
         req.session.userType = 'unknown';
         res.redirect('/');
     });
-    app.get('/login',function(req,res){
+    app.get('/login',storeQueryString,function(req,res){
+        res.location('/login');
         res.sendfile(staticclientdirpath+'/login.html',{},function(err){
             res.send(404);
         });
     });
-    app.post('/login',gme.authenticate,function(req,res){
+    app.post('/login',storeQueryString,gme.authenticate,function(req,res){
+        res.cookie('webgme',req.session.udmId);
+        res.redirect('/'+req.session.originalQuery || "");
+    });
+    app.post('/login/client',prepClientLogin,gme.authenticate,function(req,res){
+        res.cookie('webgme',req.session.udmId);
+        res.send(200);
+    });
+    app.get('/login/client/fail',function(req,res){
+        res.clearCookie('webgme');
+        res.send(401);
+    });
+    app.get('/login/google',storeQueryString,checkGoogleAuthentication,passport.authenticate('google'));
+    app.get('/login/google/return',storeQueryString,gme.authenticate,function(req,res){
+        res.cookie('webgme',req.session.udmId);
+        res.redirect('/'+req.session.originalQuery || "");
+    });
+    app.get('/login/forge',storeQueryString,forge.authenticate,function(req,res){
         res.cookie('webgme',req.session.udmId);
         res.redirect('/');
     });
-    app.get('/login/google',passport.authenticate('google'));
-    app.get('/login/google/return',gme.authenticate,function(req,res){
-        res.cookie('webgme',req.session.udmId);
-        res.redirect('/');
-    });
-    app.get('/login/forge',forge.authenticate,function(req,res){
-        res.cookie('webgme',req.session.udmId);
-        res.redirect('/');
-    });
-
-
-
 
 
     //static contents
     //javascripts - core and transportation related files
-    app.get(/^\/(common|util|storage|core|config|auth|bin|coreclient)\/.*\.js/,ensureAuthenticated,function(req,res){
+    app.get(/^\/(common|util|storage|core|config|auth|bin|coreclient)\/.*\.js$/,ensureAuthenticated,function(req,res){
         res.sendfile(path.join(staticdirpath,req.path),function(err){
             res.send(404);
         });
     });
     //client contents - js/html/css
     //css classified as not secure content
-    app.get(/^\/.*\.(css|ico)/,function(req,res){
+    app.get(/^\/.*\.(css|ico)$/,function(req,res){
         res.sendfile(staticclientdirpath+req.path,function(err){
             res.send(404);
         });
     });
-    app.get(/^\/.*\.(js|html|gif|png|bmp|svg)/,ensureAuthenticated,function(req,res){
-        res.sendfile(staticclientdirpath+req.path,function(err){
-            res.send(404);
-        });
+    app.get(/^\/.*\.(js|html|gif|png|bmp|svg|json)$/,ensureAuthenticated,function(req,res){
+        //package.json
+        if(req.path === '/package.json') {
+            res.sendfile(staticdirpath+req.path,function(err){
+                res.send(404);
+            });
+        } else {
+            res.sendfile(staticclientdirpath+req.path,function(err){
+                res.send(404);
+            });
+        }
     });
     //rest functionality
-    app.get('/rest/*',function(req,res){
-        res.send(500);
+    //rest token generation
+    app.get('/gettoken',ensureAuthenticated,function(req,res){
+        if(parameters.secureREST == true){
+            gme.getToken(req.session.id,function(err,token){
+                if(err){
+                    res.send(err);
+                } else {
+                    res.send(token);
+                }
+            });
+        } else {
+            res.send(410); //special error for the interpreters to know there is no need for token
+        }
+    });
+    app.get('/checktoken/*',function(req,res){
+        if(parameters.secureREST == true){
+            if(canCheckToken == true){
+                var token = req.url.split('/');
+                if(token.length === 3){
+                    token = token[2];
+                    setTimeout(function(){canCheckToken = true;},10000);
+                    canCheckToken = false;
+                    gme.checkToken(token,function(isValid){
+                        if(isValid === true){
+                            res.send(200);
+                        } else {
+                            res.send(403);
+                        }
+                    });
+                } else {
+                    res.send(400);
+                }
+            } else {
+                res.send(403);
+            }
+        } else {
+            res.send(410); //special error for the interpreters to know there is no need for token
+        }
+    });
+    //rest requests
+    app.get('/rest/*',checkREST,function(req,res){
+
+        var commandpos = CONFIG.secureREST === true ? 3 : 2,
+            minlength = CONFIG.secureREST === true ? 3 : 2,
+            urlArray = req.url.split('/');
+        if(urlArray.length > minlength){
+            var command = urlArray[commandpos],
+                token = CONFIG.secureREST === true ? urlArray[2] : "",
+                parameters = urlArray.slice(commandpos+1);
+            _REST.initialize(function(err){
+                if(err){
+                    res.send(500);
+                } else {
+                    _REST.doRESTCommand(_REST.request.GET,command,token,parameters,function(httpStatus,object){
+                        if(command === _REST.command.etf){
+                            var filename = 'exportedNode.json';
+                            if(parameters[3]){
+                                filename = parameters[3];
+                            }
+                            if(filename.indexOf('.') === -1){
+                                filename += '.json';
+                            }
+                            res.header("Content-Type", "application/json");
+                            res.header("Content-Disposition", "attachment;filename=\""+filename+"\"");
+                            res.status(httpStatus);
+                            //res.end(JSON.stringify(object,null,2));
+                            res.end(CANON(object));
+                        } else {
+                            res.json(httpStatus, object || null);
+                        }
+                    });
+                }
+            });
+        } else {
+            res.send(400);
+        }
+    });
+    //worker functionalities
+    app.get('/worker/simpleResult/*',function(req,res){
+        var urlArray = req.url.split('/');
+        if(urlArray.length > 3){
+            storage.getWorkerResult(urlArray[3],function(err,result){
+                if(err){
+                    res.send(500);
+                } else {
+                    var filename = 'exportedNodes.json';
+                    if(urlArray[4]){
+                        filename = urlArray[4];
+                    }
+                    if(filename.indexOf('.') === -1){
+                        filename += '.json';
+                    }
+                    res.header("Content-Type", "application/json");
+                    res.header("Content-Disposition", "attachment;filename=\""+filename+"\"");
+                    res.status(200);
+                    res.end(JSON.stringify(result,null,2));
+                }
+            });
+        } else {
+            res.send(404);
+        }
     });
     //other get
     app.get('*',function(req,res){
-        res.send(500);
+        res.send(400);
     });
 
     var httpServer = null;
@@ -245,8 +417,29 @@ requirejs(['logManager',
     __storageOptions.port = parameters.mongoport;
     __storageOptions.database = parameters.mongodatabase;
     __storageOptions.log = logManager.create('combined-server-storage');
+    __storageOptions.getToken = gme.getToken;
+
+    __storageOptions.basedir =  __dirname + "/..";
 
     storage = Storage(__storageOptions);
 
     storage.open();
+
+    //debug information
+    if(parameters.debug === true){
+        console.log('parameters of webgme server:');
+        console.log(parameters);
+    }
+    var networkIfs = require('os').networkInterfaces();
+    for(var dev in networkIfs){
+        networkIfs[dev].forEach(function(netIf){
+            if(netIf.family === 'IPv4'){
+                var address = parameters.httpsecure ? 'https' : 'http' + '://' + netIf.address + ':' + parameters.port;
+                logger.info(address);
+                if(parameters.debug === true){
+                    console.log('valid address of webgme server: '+address);
+                }
+            }
+        });
+    }
 });

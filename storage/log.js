@@ -59,11 +59,6 @@ define([ "util/assert" ], function (ASSERT) {
 			_database.getDatabaseStatus(oldstatus, callback);
 		}
 
-        function authenticate (username,privatekey, callback){
-            logger.debug('authenticate('+username+',***)');
-            _database.authenticate(username,privatekey,callback);
-        }
-
 		function openProject (projectName, callback) {
 			logger.debug('openProject(' + projectName + ")");
 			var project = null;
@@ -151,6 +146,18 @@ define([ "util/assert" ], function (ASSERT) {
 			}
 		}
 
+        function simpleRequest (parameters,callback){
+            logger.debug('simpleRequest()');
+            _database.simpleRequest(parameters,callback);
+        }
+        function simpleResult(resultId,callback){
+            logger.debug('simpleResult('+resultId+')');
+            _database.simpleResult(resultId,callback);
+        }
+        function getToken(callback){
+            logger.debug('getToken()');
+            _database.getToken(callback);
+        }
 		return {
 			openDatabase: openDatabase,
 			closeDatabase: closeDatabase,
@@ -161,7 +168,9 @@ define([ "util/assert" ], function (ASSERT) {
 			getDatabaseStatus: getDatabaseStatus,
 			openProject: openProject,
 			deleteProject: deleteProject,
-            authenticate: authenticate
+            simpleRequest: simpleRequest,
+            simpleResult: simpleResult,
+            getToken: getToken
 		};
 	}
 

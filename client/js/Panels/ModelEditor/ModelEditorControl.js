@@ -3,20 +3,20 @@
 define(['logManager',
     'js/Constants',
     'js/NodePropertyNames',
+    'js/RegistryKeys',
     'js/Widgets/DiagramDesigner/DiagramDesignerWidget.Constants',
     './ModelEditorControl.DiagramDesignerWidgetEventHandlers',
-    './ModelEditorControl.DEBUG',
     'js/Utils/GMEConcepts',
-    'js/Decorators/DecoratorDB',
-    'js/Utils/DisplayFormat'], function (logManager,
+    'js/Utils/GMEVisualConcepts',
+    'js/Utils/PreferencesHelper'], function (logManager,
                                                         CONSTANTS,
                                                         nodePropertyNames,
+                                                        REGISTRY_KEYS,
                                                         DiagramDesignerWidgetConstants,
                                                         ModelEditorControlDiagramDesignerWidgetEventHandlers,
-                                                        ModelEditorControlDEBUG,
                                                         GMEConcepts,
-                                                        DecoratorDB,
-                                                        displayFormat) {
+                                                        GMEVisualConcepts,
+                                                        PreferencesHelper) {
 
     var ModelEditorControl,
         GME_ID = "GME_ID",
@@ -24,17 +24,8 @@ define(['logManager',
         BACKGROUND_TEXT_SIZE = 30,
         DEFAULT_DECORATOR = "ModelDecorator",
         WIDGET_NAME = 'DiagramDesigner',
-        DEFAULT_LINE_STYLE = {},
         SRC_POINTER_NAME = CONSTANTS.POINTER_SOURCE,
         DST_POINTER_NAME = CONSTANTS.POINTER_TARGET;
-
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.WIDTH] = 1;
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.COLOR] = "#000000";
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.PATTERN] = "";
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.TYPE] = "";
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.START_ARROW] = "none";
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.END_ARROW] = "none";
-    DEFAULT_LINE_STYLE[CONSTANTS.LINE_STYLE.POINTS] = [];
 
     ModelEditorControl = function (options) {
         var self = this;
@@ -53,10 +44,6 @@ define(['logManager',
             throw ("ModelEditorControl can not be created");
         }
 
-        this._selectedObjectChanged = function (__project, nodeId) {
-            self.selectedObjectChanged(nodeId);
-        };
-
         if (this.designerCanvas === undefined) {
             this.logger.error("ModelEditorControl's DesignerCanvas is not specified...");
             throw ("ModelEditorControl can not be created");
@@ -71,10 +58,6 @@ define(['logManager',
         //TODO: experiemtnal only, remove!!!
         this.___SLOW_CONN = false;
 
-        this._DEFAULT_LINE_STYLE = DEFAULT_LINE_STYLE;
-
-        this._enforceMetaRules = true;
-
         //local variable holding info about the currently opened node
         this.currentNodeInfo = {"id": null, "children" : [], "parentId": null };
 
@@ -88,9 +71,10 @@ define(['logManager',
 
     ModelEditorControl.prototype.selectedObjectChanged = function (nodeId) {
         var desc,
-            nodeName;
+            nodeName,
+            self = this;
 
-        this.logger.debug("SELECTEDOBJECT_CHANGED nodeId '" + nodeId + "'");
+        this.logger.debug("activeObject '" + nodeId + "'");
 
         //delete everything from model editor
         this.designerCanvas.clear();
@@ -106,28 +90,34 @@ define(['logManager',
         this._Subcomponent2GMEID = {};
 
         //remove current territory patterns
-        if (this.currentNodeInfo.id) {
+        if (this._territoryId) {
             this._client.removeUI(this._territoryId);
         }
 
         this.currentNodeInfo.id = nodeId;
         this.currentNodeInfo.parentId = undefined;
 
-        if (nodeId) {
+        this._delayedConnections = [];
+        this._selectedAspect = WebGMEGlobal.State.getActiveAspect();
+
+        //since PROJECT_ROOT_ID is an empty string, it is considered false..
+        if (nodeId || nodeId === CONSTANTS.PROJECT_ROOT_ID) {
             desc = this._getObjectDescriptor(nodeId);
             if (desc) {
                 this.currentNodeInfo.parentId = desc.parentId;
             }
 
-            if (this.currentNodeInfo.parentId) {
-                this.$btnModelHierarchyUp.show();
-            } else {
-                this.$btnModelHierarchyUp.hide();
-            }
+            this._refreshBtnModelHierarchyUp();
 
             //put new node's info into territory rules
             this._selfPatterns = {};
-            this._selfPatterns[nodeId] = { "children": 2 };
+
+			 if (this._selectedAspect === CONSTANTS.ASPECT_ALL) {
+				this._selfPatterns[nodeId] = { "children": 2 };
+			} else {
+				this._selfPatterns[nodeId] = this._client.getAspectTerritoryPattern(nodeId, this._selectedAspect);
+				this._selfPatterns[nodeId].children = 2;
+			}
 
             this._firstLoad = true;
 
@@ -139,7 +129,9 @@ define(['logManager',
 
             this.designerCanvas.showProgressbar();
 
-            this._territoryId = this._client.addUI(this, true);
+            this._territoryId = this._client.addUI(this, function (events) {
+                self._eventCallback(events);
+            });
             //update the territory
             this._client.updateTerritory(this._territoryId, this._selfPatterns);
         } else {
@@ -153,41 +145,8 @@ define(['logManager',
             objDescriptor,
             pos,
             defaultPos = 0,
-            lineStyle,
-            getValue;
-
-        getValue = function (srcObj, srcKey, dstObj, dstKey, type) {
-            if (srcObj) {
-                if (srcObj[srcKey]) {
-                      switch(type) {
-                        case 'int':
-                            try {
-                                dstObj[dstKey] = parseInt(srcObj[srcKey], 10);
-                            } catch (e) {
-
-                            }
-                            break;
-                        case 'array':
-                            try {
-                                if (!_.isArray(srcObj[srcKey])) {
-                                    dstObj[dstKey] = JSON.parse(srcObj[srcKey]);
-                                } else {
-                                    dstObj[dstKey] = srcObj[srcKey].slice(0);
-                                }
-
-                                if (!_.isArray(dstObj[dstKey])) {
-                                    delete dstObj[dstKey];
-                                }
-                            } catch (e) {
-
-                            }
-                            break;
-                        default:
-                            dstObj[dstKey] = srcObj[srcKey];
-                     }
-                }
-            }
-        };
+            customPoints,
+            memberListContainerObj;
 
         if (nodeObj) {
             objDescriptor = {};
@@ -203,24 +162,24 @@ define(['logManager',
                     objDescriptor.source = nodeObj.getPointer(SRC_POINTER_NAME).to;
                     objDescriptor.target = nodeObj.getPointer(DST_POINTER_NAME).to;
 
-                    //clear out name not to display anything for connections
-                    objDescriptor.name = displayFormat.resolve(nodeObj);
+                    //get all the other visual properties of the connection
+                    _.extend(objDescriptor, GMEVisualConcepts.getConnectionVisualProperties(nodeId));
 
-                    if (nodeObj.getAttribute(nodePropertyNames.Attributes.directed) === true) {
-                        objDescriptor.arrowEnd = "block";
+                    //get custom points from the node object
+                    customPoints = nodeObj.getRegistry(REGISTRY_KEYS.LINE_CUSTOM_POINTS);
+                    if (customPoints && _.isArray(customPoints)) {
+                        objDescriptor[CONSTANTS.LINE_STYLE.CUSTOM_POINTS] = $.extend(true, [], customPoints); //JSON.parse(JSON.stringify(customPoints));
                     }
-                    lineStyle =  nodeObj.getRegistry(nodePropertyNames.Registry.lineStyle);
-
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.WIDTH, objDescriptor, DiagramDesignerWidgetConstants.LINE_WIDTH, 'int');
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.COLOR, objDescriptor, DiagramDesignerWidgetConstants.LINE_COLOR);
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.PATTERN, objDescriptor, DiagramDesignerWidgetConstants.LINE_PATTERN);
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.TYPE, objDescriptor, DiagramDesignerWidgetConstants.LINE_TYPE);
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.START_ARROW, objDescriptor, DiagramDesignerWidgetConstants.LINE_START_ARROW);
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.END_ARROW, objDescriptor, DiagramDesignerWidgetConstants.LINE_END_ARROW);
-                    getValue(lineStyle, CONSTANTS.LINE_STYLE.POINTS, objDescriptor, DiagramDesignerWidgetConstants.LINE_POINTS, 'array');
                 } else {
                     objDescriptor.kind = "MODEL";
-                    pos = nodeObj.getRegistry(nodePropertyNames.Registry.position);
+
+                    //aspect specific coordinate
+                    if (this._selectedAspect === CONSTANTS.ASPECT_ALL) {
+                        pos = nodeObj.getRegistry(REGISTRY_KEYS.POSITION);
+                    } else {
+                        memberListContainerObj = this._client.getNode(this.currentNodeInfo.id);
+                        pos = memberListContainerObj.getMemberRegistry(this._selectedAspect, nodeId, REGISTRY_KEYS.POSITION) || nodeObj.getRegistry(REGISTRY_KEYS.POSITION);
+                    }
 
                     if (pos) {
                         objDescriptor.position = { "x": pos.x, "y": pos.y };
@@ -240,8 +199,8 @@ define(['logManager',
                         objDescriptor.position.y = defaultPos;
                     }
 
-                    objDescriptor.decorator = nodeObj.getRegistry(nodePropertyNames.Registry.decorator) || "";
-                    objDescriptor.rotation = parseInt(nodeObj.getRegistry(nodePropertyNames.Registry.rotation), 10) || 0;
+                    objDescriptor.decorator = nodeObj.getRegistry(REGISTRY_KEYS.DECORATOR) || "";
+                    objDescriptor.rotation = parseInt(nodeObj.getRegistry(REGISTRY_KEYS.ROTATION), 10) || 0;
                 }
             }
         }
@@ -263,17 +222,17 @@ define(['logManager',
     };
 
     // PUBLIC METHODS
-    ModelEditorControl.prototype.onOneEvent = function (events) {
+    ModelEditorControl.prototype._eventCallback = function (events) {
         var i = events ? events.length : 0;
 
-        this.logger.debug("onOneEvent '" + i + "' items");
+        this.logger.debug("_eventCallback '" + i + "' items");
 
         if (i > 0) {
             this.eventQueue.push(events);
             this.processNextInQueue();
         }
 
-        this.logger.debug("onOneEvent '" + events.length + "' items - DONE");
+        this.logger.debug("_eventCallback '" + events.length + "' items - DONE");
     };
 
     ModelEditorControl.prototype.processNextInQueue = function () {
@@ -404,6 +363,8 @@ define(['logManager',
                     orderedItemEvents.push(e);
                 }
 
+            } else if (this.currentNodeInfo.id === e.eid) {
+                orderedItemEvents.push(e);
             }
 
         }
@@ -494,7 +455,7 @@ define(['logManager',
             this._firstLoad = false;
 
             //check if there is active selection set in client
-            var activeSelection = this._client.getActiveSelection();
+            var activeSelection = WebGMEGlobal.State.getActiveSelection();
 
             if (activeSelection && activeSelection.length > 0) {
                 i = activeSelection.length;
@@ -579,6 +540,8 @@ define(['logManager',
                         objDesc.control = this;
                         objDesc.metaInfo = {};
                         objDesc.metaInfo[CONSTANTS.GME_ID] = gmeID;
+                        objDesc.preferencesHelper = PreferencesHelper.getPreferences();
+                        objDesc.aspect = this._selectedAspect;
 
                         uiComponent = this.designerCanvas.createDesignerItem(objDesc);
 
@@ -636,6 +599,10 @@ define(['logManager',
                     this._checkComponentDependency(gmeID, CONSTANTS.TERRITORY_EVENT_LOAD);
                 }
             }
+        } else {
+            //currently opened node
+            this._updateSheetName(objD.name);
+            this._updateAspects();
         }
 
         return territoryChanged;
@@ -655,9 +622,8 @@ define(['logManager',
             //the updated object is the parent whose children are displayed here
             //the interest about the parent is:
             // - name change
-            this.designerCanvas.setTitle(objDesc.name);
-            this.designerCanvas.setBackgroundText(objDesc.name, {'font-size': BACKGROUND_TEXT_SIZE,
-                'color': BACKGROUND_TEXT_COLOR });
+            this._updateSheetName(objDesc.name);
+            this._updateAspects();
         } else {
             if (objDesc) {
                 if (objDesc.parentId === this.currentNodeInfo.id) {
@@ -670,6 +636,8 @@ define(['logManager',
                                 decClass = this._getItemDecorator(objDesc.decorator);
 
                                 objDesc.decoratorClass = decClass;
+                                objDesc.preferencesHelper = PreferencesHelper.getPreferences();
+                                objDesc.aspect = this._selectedAspect;
 
                                 this.designerCanvas.updateDesignerItem(componentID, objDesc);
                             }
@@ -724,6 +692,7 @@ define(['logManager',
                                 componentID =  this._GmeID2ComponentID[gmeID][len];
                                 this.designerCanvas.deleteComponent(componentID);
                                 this._GmeID2ComponentID[gmeID].splice(len, 1);
+                                delete this._ComponentID2GmeID[componentID];
                             }
                         }
                     }
@@ -733,6 +702,12 @@ define(['logManager',
                 }
             }
         }
+    };
+
+    ModelEditorControl.prototype._updateSheetName = function (name) {
+        this.designerCanvas.setTitle(name.toUpperCase());
+        this.designerCanvas.setBackgroundText(name.toUpperCase(), {'font-size': BACKGROUND_TEXT_SIZE,
+            'color': BACKGROUND_TEXT_COLOR });
     };
 
     ModelEditorControl.prototype._onUnload = function (gmeID) {
@@ -762,8 +737,8 @@ define(['logManager',
 
         if (gmeID === this.currentNodeInfo.id) {
             //the opened model has been removed from territoy --> most likely deleted...
-            this.logger.debug('The currently opened model has been deleted --- GMEID: "' + this.currentNodeInfo.id + '"');
-            this.designerCanvas.setBackgroundText('The currently opened model has been deleted...', {'font-size': BACKGROUND_TEXT_SIZE,
+            this.logger.debug('The previously opened model does not exist... --- GMEID: "' + this.currentNodeInfo.id + '"');
+            this.designerCanvas.setBackgroundText('The previously opened model does not exist...', {'font-size': BACKGROUND_TEXT_SIZE,
                                                                                                      'color': BACKGROUND_TEXT_COLOR});
         } else {
             if (this._GmeID2ComponentID.hasOwnProperty(gmeID)) {
@@ -798,16 +773,18 @@ define(['logManager',
     };
 
     ModelEditorControl.prototype._onModelHierarchyUp = function () {
-        if (this.currentNodeInfo.parentId) {
-            this._client.setSelectedObjectId(this.currentNodeInfo.parentId);
+        var myId = this.currentNodeInfo.id;
+        if (this.currentNodeInfo.parentId ||
+            this.currentNodeInfo.parentId === CONSTANTS.PROJECT_ROOT_ID) {
+            WebGMEGlobal.State.setActiveObject(this.currentNodeInfo.parentId);
+            WebGMEGlobal.State.setActiveSelection([myId]);
         }
     };
 
     ModelEditorControl.prototype._removeConnectionSegmentPoints = function () {
         var idList = this.designerCanvas.selectionManager.getSelectedElements(),
             len = idList.length,
-            nodeObj,
-            existingLineStyle;
+            nodeObj;
 
 
         this._client.startTransaction();
@@ -817,11 +794,7 @@ define(['logManager',
                 nodeObj = this._client.getNode(this._ComponentID2GmeID[idList[len]]);
 
                 if (nodeObj) {
-                    existingLineStyle = nodeObj.getEditableRegistry(nodePropertyNames.Registry.lineStyle) || {};
-
-                    existingLineStyle[CONSTANTS.LINE_STYLE.POINTS] = [];
-
-                    this._client.setRegistry(nodeObj.getId(), nodePropertyNames.Registry.lineStyle, existingLineStyle);
+                    this._client.delRegistry(nodeObj.getId(), REGISTRY_KEYS.LINE_CUSTOM_POINTS);
                 }
             }
         }
@@ -939,13 +912,29 @@ define(['logManager',
         }
     };
 
+    ModelEditorControl.prototype._stateActiveObjectChanged = function (model, activeObjectId) {
+        this.selectedObjectChanged(activeObjectId);
+    };
+
+    ModelEditorControl.prototype._stateActiveSelectionChanged = function (model, activeSelection) {
+        if (this._settingActiveSelection !== true) {
+            if (activeSelection) {
+                this.activeSelectionChanged(activeSelection);
+            } else {
+                this.activeSelectionChanged([]);
+            }
+        }
+    };
+
     ModelEditorControl.prototype._attachClientEventListeners = function () {
         this._detachClientEventListeners();
-        this._client.addEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged, this);
+        WebGMEGlobal.State.on('change:' + CONSTANTS.STATE_ACTIVE_SELECTION, this._stateActiveSelectionChanged, this);
     };
 
     ModelEditorControl.prototype._detachClientEventListeners = function () {
-        this._client.removeEventListener(this._client.events.SELECTEDOBJECT_CHANGED, this._selectedObjectChanged);
+        WebGMEGlobal.State.off('change:' + CONSTANTS.STATE_ACTIVE_OBJECT, this._stateActiveObjectChanged);
+        WebGMEGlobal.State.off('change:' + CONSTANTS.STATE_ACTIVE_SELECTION, this._stateActiveSelectionChanged);
     };
 
     ModelEditorControl.prototype.onActivate = function () {
@@ -961,26 +950,19 @@ define(['logManager',
     ModelEditorControl.prototype._displayToolbarItems = function () {
         if (this._toolbarInitialized !== true) {
             this._initializeToolbar();
-            if (DEBUG === true) {
-                this._addDebugModeExtensions();
-            }
         } else {
             for (var i = 0; i < this._toolbarItems.length; i++) {
                 this._toolbarItems[i].show();
             }
-            if (DEBUG === true) {
-                this._showDebugModeExtensions();
-            }
         }
+
+        this._refreshBtnModelHierarchyUp();
     };
 
     ModelEditorControl.prototype._hideToolbarItems = function () {
         if (this._toolbarInitialized === true) {
             for (var i = 0; i < this._toolbarItems.length; i++) {
                 this._toolbarItems[i].hide();
-            }
-            if (DEBUG === true) {
-                this._hideDebugModeExtensions();
             }
         }
     };
@@ -989,9 +971,6 @@ define(['logManager',
         if (this._toolbarInitialized === true) {
             for (var i = 0; i < this._toolbarItems.length; i++) {
                 this._toolbarItems[i].destroy();
-            }
-            if (DEBUG === true) {
-                this._removeDebugModeExtensions();
             }
         }
     };
@@ -1036,30 +1015,112 @@ define(['logManager',
         this._toolbarItems.push(this.$btnConnectionRemoveSegmentPoints);
         this.$btnConnectionRemoveSegmentPoints.enabled(false);
 
-        /************ ENFORCE META RULES TOGGLE BUTTON **********************/
-        /*this.$btnEnforceMetaRules = toolBar.addToggleButton({
-                "icon": 'icon-exclamation-sign',
-                "text": 'Enforce META rules',
-                "title": "Enforce META rules ON/OFF",
-                "clickFn": function (data, isPressed) {
-                    self._enforceMetaRules = !self._enforceMetaRules;
-                    self.logger.warning('!!! ENFORCE META RULES IS NOT YET IMPLEMENTED !!!');
-                }}
-        );
-        this.$btnEnforceMetaRules.setToggled(this._enforceMetaRules);
-        this._toolbarItems.push(this.$btnEnforceMetaRules);*/
-
-
         this._toolbarInitialized = true;
+    };
+
+    ModelEditorControl.prototype.getNodeID = function () {
+        return this.currentNodeInfo.id;
+    };
+
+    ModelEditorControl.prototype._refreshBtnModelHierarchyUp = function () {
+        if (this.currentNodeInfo.parentId ||
+            this.currentNodeInfo.parentId === CONSTANTS.PROJECT_ROOT_ID) {
+            this.$btnModelHierarchyUp.show();
+        } else {
+            this.$btnModelHierarchyUp.hide();
+        }
+    };
+
+    ModelEditorControl.prototype.activeSelectionChanged = function (activeSelection) {
+        var selectedIDs = [],
+            len = activeSelection.length;
+
+        while (len--) {
+            if (this._GmeID2ComponentID.hasOwnProperty(activeSelection[len])) {
+                selectedIDs = selectedIDs.concat(this._GmeID2ComponentID[activeSelection[len]]);
+            }
+        }
+
+        this.designerCanvas.select(selectedIDs);
+    };
+
+    ModelEditorControl.prototype._updateAspects = function () {
+        var objId = this.currentNodeInfo.id,
+            aspects,
+            tabID,
+            i,
+            selectedTabID;
+
+        this._aspects = {};
+        this.designerCanvas.clearTabs();
+
+        if (objId || objId === CONSTANTS.PROJECT_ROOT_ID) {
+            aspects = this._client.getMetaAspectNames(objId) || [];
+
+            aspects.sort(function (a,b) {
+                var an = a.toLowerCase(),
+                    bn = b.toLowerCase();
+
+                return (an < bn) ? -1 : 1;
+            });
+
+            aspects.splice(0,0,CONSTANTS.ASPECT_ALL);
+
+            for (i = 0; i < aspects.length; i += 1) {
+                tabID = this.designerCanvas.addTab(aspects[i]);
+
+                this._aspects[tabID] = aspects[i];
+
+                if (this._selectedAspect &&
+                    this._selectedAspect === aspects[i]) {
+                    selectedTabID = tabID;
+                }
+            }
+        }
+
+        if (!selectedTabID) {
+            for (selectedTabID in this._aspects) {
+                if (this._aspects.hasOwnProperty(selectedTabID)) {
+                    break;
+                }
+            }
+        }
+
+        this.designerCanvas.selectTab(selectedTabID);
+
+        //check if the node's aspect rules has changed or not, and if so, initialize with that
+        if (this._selectedAspect !== CONSTANTS.ASPECT_ALL) {
+            var nodeId = this.currentNodeInfo.id;
+            var newAspectRules = this._client.getAspectTerritoryPattern(nodeId, this._selectedAspect);
+            var aspectRulesChanged = false;
+
+            if (this._selfPatterns[nodeId].items && newAspectRules.items) {
+                aspectRulesChanged = (_.difference(this._selfPatterns[nodeId].items, newAspectRules.items)).length > 0;
+                if (aspectRulesChanged === false) {
+                    aspectRulesChanged = (_.difference(newAspectRules.items, this._selfPatterns[nodeId].items)).length > 0;
+                }
+            } else {
+                if (!this._selfPatterns[nodeId].items && !newAspectRules.items) {
+                    //none of them has items, no change
+                } else {
+                    aspectRulesChanged = true;
+                }
+            }
+
+            if (aspectRulesChanged) {
+                this.selectedObjectChanged(nodeId);
+            }
+        }
+    };
+
+    ModelEditorControl.prototype._initializeSelectedAspect = function () {
+        WebGMEGlobal.State.setActiveAspect(this._selectedAspect);
+
+        this.selectedObjectChanged(this.currentNodeInfo.id);
     };
 
     //attach ModelEditorControl - DesignerCanvas event handler functions
     _.extend(ModelEditorControl.prototype, ModelEditorControlDiagramDesignerWidgetEventHandlers.prototype);
-
-    //in DEBUG mode add additional content to canvas
-    if (DEBUG === true) {
-        _.extend(ModelEditorControl.prototype, ModelEditorControlDEBUG.prototype);
-    }
 
     return ModelEditorControl;
 });
